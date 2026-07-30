@@ -9,26 +9,34 @@ config baked in.
 
 ### `bid-strategy-audit.js`
 
-Audits a single account's campaign bid strategies ahead of the 17 August 2026
-target-based-bidding change and writes a five-tab Google Sheet:
+Audits a single account's campaign bid strategies ahead of the
+[17 August 2026 target-based-bidding change](https://support.google.com/google-ads/answer/17061251):
+from that date, budget-limited campaigns using tCPA/tROAS bid to the **stated**
+target rather than the better number the algorithm was actually achieving, so
+stale targets start steering real spend. The audit finds the drift between
+stated targets and 30-day actuals and writes a three-tab Google Sheet:
 
 1. **Summary** — with-target vs no-target pie charts (campaign count, 60d cost,
-   60d conversions) plus a full campaign table with trend-based priority.
+   60d conversions), a full campaign table with trend-based priority, and a
+   compact "How to read this" reference block.
 2. **Actionable** — one row per campaign whose target should move, with timing
-   (before/after 17 Aug), a proposed target seeded at the 30d actual, and blank
-   Wk1–3/Status columns for manual tracking.
+   ("Before 17 Aug" for budget-limited campaigns — the directly-affected set),
+   a proposed target seeded at the 30d actual, auto-generated commentary, and
+   blank Wk1–3/Status columns for manual tracking.
 3. **Campaign Data** — every raw and computed field across the 60/30/14/7-day
    windows.
-4. **Segment Summary** — cost-weighted ROAS/CPA by segment (target status,
-   budget status, gap band, bid strategy — no name-based inference), with cost
-   and 30d-vs-7d charts.
-5. **Method & Definitions** — how everything is computed and what the data
-   cannot tell you.
 
-Key implementation note: windowed ROAS/CPA are **computed, not read** — the
-report API only aggregates one date range per query, so the script runs the
-metrics query once per window (30/14/7 days, each ending yesterday in the
-account's timezone) and joins onto a 60-day base by campaign ID in memory.
+Implementation notes:
+
+- Windowed ROAS/CPA are **computed, not read** — the report API only aggregates
+  one date range per query, so the script runs the metrics query once per
+  window (30/14/7 days, each ending yesterday in the account's timezone) and
+  joins onto a 60-day base by campaign ID in memory.
+- Budget-limited detection tries the platform's own
+  `campaign.primary_status_reasons` (`BUDGET_CONSTRAINED` — the UI's "Limited
+  by budget") first, and falls back to a spend-vs-budget derivation (7-day
+  average daily spend ≥ 85% of daily budget) if that field isn't available.
+  The Summary notes state which method the run used.
 
 Setup: paste the file into a new script, authorise, optionally set
 `SPREADSHEET_URL` in the config block (blank = a new sheet is created and its

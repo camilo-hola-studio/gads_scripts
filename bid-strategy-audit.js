@@ -1,6 +1,18 @@
 /**
  * BID STRATEGY AUDIT — pre-17-Aug-2026 target-based-bidding change.
  *
+ * THE CHANGE (https://support.google.com/google-ads/answer/17061251): from
+ * 17 August 2026, budget-limited campaigns using Target CPA / Target ROAS
+ * start bidding to the TARGET YOU TYPED IN, not the better number the
+ * algorithm quietly achieved within the budget. A campaign with a stale
+ * target (e.g. tCPA $10 while actually converting at $5) will be pushed back
+ * toward the stated $10 — expect spend, CPC and volume shifts wherever the
+ * stated target and 30d actual have drifted apart. Only budget-limited
+ * campaigns that carry a target are directly affected; Google's Bid Target
+ * Adjustment Tool (in-product since 6 July 2026) suggests targets from recent
+ * performance but changes nothing automatically. This audit finds the drift
+ * so targets can be re-anchored to actuals before the date.
+ *
  * INSTALL: In Google Ads, go to Tools > Bulk actions > Scripts, create a new
  * script, paste this whole file in, click Authorise (it needs Ads read access
  * plus Google Sheets/Drive to write the report), optionally set
@@ -13,8 +25,8 @@
  * What it does: pulls campaign performance over four windows (60d base,
  * 30/14/7d rolling, all ending yesterday), computes windowed ROAS/CPA
  * in-script (there is no native windowed column), classifies every campaign
- * by target status, and writes a five-tab audit workbook: Summary,
- * Actionable, Campaign Data, Segment Summary, Method & Definitions.
+ * by target status, and writes a three-tab audit workbook: Summary,
+ * Actionable, Campaign Data.
  */
 
 // ---------------------------------------------------------------------------
@@ -55,8 +67,7 @@ var COLORS = {
   GREY: '#EFEFEF'    // no-target / low-spend rows
 };
 
-var TAB_ORDER = ['Summary', 'Actionable', 'Campaign Data', 'Segment Summary',
-                 'Method & Definitions'];
+var TAB_ORDER = ['Summary', 'Actionable', 'Campaign Data'];
 
 // ---------------------------------------------------------------------------
 // ENTRY POINT
@@ -117,8 +128,6 @@ function main() {
   buildSummaryTab_(ss, list, account, ranges, primaryMetric, currency);
   buildActionableTab_(ss, list, primaryMetric, currency);
   buildCampaignDataTab_(ss, list, primaryMetric, currency, totalCost);
-  buildSegmentSummaryTab_(ss, list, primaryMetric, currency, totalCost);
-  buildMethodTab_(ss, ranges, primaryMetric, currency);
 
   orderTabs_(ss);
 
@@ -185,21 +194,46 @@ function fetchPortfolioStrategies_() {
   return map;
 }
 
+// How budget-limited was detected this run: 'primary_status_reasons' (the
+// platform's own flag) or 'derived' (spend-vs-budget fallback). Surfaced in
+// the Summary notes so the sheet says which method it used.
+var BUDGET_LIMITED_METHOD = 'derived';
+
 function fetchBase_(range, portfolios) {
   var campaigns = {};
-  var rows = AdsApp.report(
-    'SELECT campaign.id, campaign.name, campaign.bidding_strategy_type, ' +
-    ' campaign.bidding_strategy, ' +
-    ' campaign.maximize_conversion_value.target_roas, ' +
-    ' campaign.maximize_conversions.target_cpa_micros, ' +
-    ' campaign.target_roas.target_roas, ' +
-    ' campaign.target_cpa.target_cpa_micros, ' +
-    ' campaign_budget.amount_micros, campaign_budget.explicitly_shared, ' +
-    ' metrics.cost_micros, metrics.conversions_value, metrics.conversions ' +
-    'FROM campaign ' +
-    "WHERE campaign.status = 'ENABLED' " +
-    " AND segments.date BETWEEN '" + range.start + "' AND '" + range.end + "'"
-  ).rows();
+
+  function baseQuery(withStatusReasons) {
+    return 'SELECT campaign.id, campaign.name, campaign.bidding_strategy_type, ' +
+      ' campaign.bidding_strategy, ' +
+      ' campaign.maximize_conversion_value.target_roas, ' +
+      ' campaign.maximize_conversions.target_cpa_micros, ' +
+      ' campaign.target_roas.target_roas, ' +
+      ' campaign.target_cpa.target_cpa_micros, ' +
+      ' campaign_budget.amount_micros, campaign_budget.explicitly_shared, ' +
+      (withStatusReasons ? ' campaign.primary_status_reasons, ' : '') +
+      ' metrics.cost_micros, metrics.conversions_value, metrics.conversions ' +
+      'FROM campaign ' +
+      "WHERE campaign.status = 'ENABLED' " +
+      " AND segments.date BETWEEN '" + range.start + "' AND '" + range.end + "'";
+  }
+
+  // First choice for the budget-limited flag: the platform's own
+  // campaign.primary_status_reasons (BUDGET_CONSTRAINED is what the UI shows
+  // as "Limited by budget"). The field's availability depends on the API
+  // version behind the Scripts environment, so we attempt it and fall back
+  // to a spend-vs-budget derivation (see isBudgetLimited_) if the query is
+  // rejected.
+  var rows, statusReasonsAvailable = true;
+  try {
+    rows = AdsApp.report(baseQuery(true)).rows();
+    rows.hasNext(); // force validation now, not mid-parse
+    BUDGET_LIMITED_METHOD = 'primary_status_reasons';
+  } catch (e) {
+    Logger.log('primary_status_reasons unavailable, deriving budget-limited ' +
+               'from spend vs budget instead: ' + e);
+    statusReasonsAvailable = false;
+    rows = AdsApp.report(baseQuery(false)).rows();
+  }
 
   while (rows.hasNext()) {
     var r = rows.next();
@@ -214,6 +248,12 @@ function fetchBase_(range, portfolios) {
         target: null,
         budgetDaily: micros_(r['campaign_budget.amount_micros']),
         budgetShared: String(r['campaign_budget.explicitly_shared']) === 'true',
+        // Repeated enum; rendered as an array or bracketed string depending
+        // on runtime, so match on the string form either way.
+        statusSaysLimited: statusReasonsAvailable
+            ? String(r['campaign.primary_status_reasons'] || '')
+                  .indexOf('BUDGET_CONSTRAINED') !== -1
+            : null,
         base: {
           cost: micros_(r['metrics.cost_micros']),
           value: num_(r['metrics.conversions_value']),
@@ -374,16 +414,20 @@ function deriveCampaign_(c, primaryMetric, totalCost) {
 }
 
 /**
- * Budget-limited flag. The UI's "Limited by budget" status isn't reliably
- * exposed as a clean GAQL field in the Scripts environment (the
- * campaign.primary_status_reasons route is version-dependent), so we DERIVE
- * it instead: a campaign is treated as budget-limited when its last-7-day
- * average daily spend reaches BUDGET_LIMITED_THRESHOLD (default 85%) of its
- * daily budget. Caveat, commented deliberately: for shared budgets the
- * comparison is this campaign's own spend vs the whole shared amount, so
- * shared-budget campaigns can be under-flagged.
+ * Budget-limited flag, two-tier:
+ *  1. Preferred: campaign.primary_status_reasons contains BUDGET_CONSTRAINED —
+ *     this is the platform's own "Limited by budget" signal, the same one the
+ *     UI shows (fetched in fetchBase_, null when the field isn't available in
+ *     this Scripts environment's API version).
+ *  2. Fallback derivation: last-7-day average daily spend reaches
+ *     BUDGET_LIMITED_THRESHOLD (default 85%) of the daily budget. Caveat:
+ *     for shared budgets the comparison is this campaign's own spend vs the
+ *     whole shared amount, so shared-budget campaigns can be under-flagged.
  */
 function isBudgetLimited_(c) {
+  if (c.statusSaysLimited !== null && c.statusSaysLimited !== undefined) {
+    return c.statusSaysLimited;
+  }
   if (!c.budgetDaily || !c.w7) return false;
   var avgDaily = c.w7.cost / CONFIG.WINDOW_SHORT;
   return avgDaily >= CONFIG.BUDGET_LIMITED_THRESHOLD * c.budgetDaily;
@@ -492,11 +536,39 @@ function buildSummaryTab_(ss, list, account, ranges, primaryMetric, currency) {
     sh.getRange(hdrRow + 1, 1).setValue('No enabled campaigns found in this account.');
   }
 
+  // Compact method notes — the reference material lives here now rather than
+  // on its own tab, to keep the workbook lean.
   var noteRow = hdrRow + out.length + 2;
-  sh.getRange(noteRow, 1).setValue(
-      'Note: decay on low-spend campaigns (< ' + CONFIG.LOW_SPEND_FLOOR + ' ' +
-      currency + ' over 60d) is volatile — shown deliberately for context, not action.')
-      .setFontStyle('italic').setFontColor('#666666');
+  var notes = [
+    'How to read this',
+    'The change (support.google.com/google-ads/answer/17061251): from 17 Aug 2026, ' +
+      'budget-limited campaigns with a tCPA/tROAS target bid to the STATED target, not the ' +
+      'better number the algorithm was actually achieving. Re-anchor stale targets to 30d ' +
+      'actuals before the date — the Actionable tab lists exactly those campaigns.',
+    'Windowed ROAS/CPA are computed in-script from raw cost/value/conversions per window ' +
+      '(no native windowed column exists). ROAS = value/cost; CPA = cost/conversions; ' +
+      'blanks mean the denominator was zero.',
+    'Gap vs Target is direction-aware: beating the target reads positive for both ROAS and ' +
+      'CPA. Trend 30d>7d: negative always means deteriorating. Priority: <= -20% = Act now; ' +
+      '-10% to -20% = Watch; else Stable.',
+    'Budget-limited via ' +
+      (BUDGET_LIMITED_METHOD === 'primary_status_reasons'
+        ? 'the platform\'s own status (primary_status_reasons: BUDGET_CONSTRAINED).'
+        : 'derivation: 7d avg daily spend >= ' +
+          Math.round(CONFIG.BUDGET_LIMITED_THRESHOLD * 100) +
+          '% of daily budget (platform status field unavailable; shared budgets can be under-flagged).'),
+    'Decay on low-spend campaigns (< ' + CONFIG.LOW_SPEND_FLOOR + ' ' + currency +
+      ' over 60d) is volatile — shown for context, never flagged for action. All rollups are ' +
+      'cost-weighted. The data cannot see: attribution lag, intended campaign role, whether a ' +
+      'target was deliberate or inherited, or the promo calendar.'
+  ];
+  notes.forEach(function(n, i) {
+    var cell = sh.getRange(noteRow + i, 1, 1, 7);
+    cell.merge().setValue(n).setWrap(true).setFontSize(9)
+        .setFontColor(i === 0 ? COLORS.NAVY : '#666666');
+    if (i === 0) cell.setFontWeight('bold');
+    else cell.setFontStyle('italic');
+  });
 
   sh.setColumnWidths(1, 1, 280);
   sh.setColumnWidths(2, 6, 130);
@@ -512,8 +584,10 @@ function buildActionableTab_(ss, list, primaryMetric, currency) {
   subtitle_(sh, 2, 'Filter: carries a target, 60d cost >= ' +
       CONFIG.LOW_SPEND_FLOOR + ' ' + currency +
       ', and |gap| > 20% or decay <= -20%. Ordered by 60d cost. ' +
-      'Proposed Target is seeded at the 30d actual - edit freely; Wk1-3 and ' +
-      'Status are yours for manual tracking.');
+      '"Before 17 Aug" rows are budget-limited: from that date they bid to the ' +
+      'stated target instead of the level actually being achieved, so a stale ' +
+      'target starts steering real spend. Proposed Target is seeded at the 30d ' +
+      'actual - edit freely; Wk1-3 and Status are yours for manual tracking.');
 
   var headers = ['Campaign', 'Target', 'Actual 30d', 'Gap', 'Timing',
                  'Proposed Target', 'Wk1', 'Wk2', 'Wk3', 'Status', 'Commentary'];
@@ -559,10 +633,19 @@ function actionCommentary_(c) {
   if (c.gap != null) {
     var pct = Math.round(Math.abs(c.gap) * 100);
     if (c.gap > 0.20) {
-      parts.push('Beating ' + metric + ' target by ' + pct +
-                 '% over 30d - target likely has headroom');
+      // The exact case the 17 Aug change bites: the stated target is looser
+      // than reality, and enforcement will pull performance back toward it.
+      parts.push('Beating ' + metric + ' target by ' + pct + '% over 30d - ' +
+                 'stated target is stale' +
+                 (c.budgetLimited
+                   ? ' and from 17 Aug bidding chases the stated number, so ' +
+                     'tighten it to the 30d actual or expect efficiency to ' +
+                     'drift back to the looser target'
+                   : '; tighten toward the 30d actual'));
     } else if (c.gap < -0.20) {
-      parts.push('Missing ' + metric + ' target by ' + pct + '% over 30d');
+      parts.push('Missing ' + metric + ' target by ' + pct + '% over 30d - ' +
+                 'target is stricter than reality; decide whether to relax it ' +
+                 'to the 30d actual or fix the campaign first');
     } else {
       parts.push('Within ' + pct + '% of ' + metric + ' target over 30d');
     }
@@ -577,8 +660,7 @@ function actionCommentary_(c) {
                'a per-campaign change');
   }
   if (c.budgetLimited) {
-    parts.push('budget-limited - target and budget cap are interacting, ' +
-               'resolve before 17 Aug');
+    parts.push('budget-limited: in the directly-affected set for 17 Aug');
   }
   return parts.join('; ') + '.';
 }
@@ -629,200 +711,6 @@ function buildCampaignDataTab_(ss, list, primaryMetric, currency, totalCost) {
   sh.setFrozenColumns(1);
   sh.setColumnWidths(1, 1, 280);
   sh.setColumnWidths(2, 17, 110);
-  finishSheet_(sh);
-}
-
-// ---------------------------------------------------------------------------
-// TAB 4: SEGMENT SUMMARY
-// ---------------------------------------------------------------------------
-function buildSegmentSummaryTab_(ss, list, primaryMetric, currency, totalCost) {
-  var sh = resetSheet_(ss, 'Segment Summary');
-  title_(sh, 1, 'Segment Summary - cost-weighted ' + primaryMetric + ' by segment', 12);
-  subtitle_(sh, 2, 'Segments come only from target status, budget status, gap ' +
-      'band and bid strategy - never from campaign names. Every rollup is ' +
-      'cost-weighted (ratio of sums), not an average of ratios.');
-
-  // Segment definitions. Rows are dimension-prefixed because the dimensions
-  // overlap (a campaign appears once per dimension it belongs to).
-  var defs = [
-    ['Target: With target', function(c) { return c.hasTarget; }],
-    ['Target: No target', function(c) { return !c.hasTarget; }],
-    ['Budget: Limited', function(c) { return c.budgetLimited; }],
-    ['Budget: Not limited', function(c) { return !c.budgetLimited; }],
-    ['Gap: Beating target >20%', function(c) { return c.segment === 'Beating target >20%'; }],
-    ['Gap: Within +/-20%', function(c) { return c.segment === 'Within +/-20% of target'; }],
-    ['Gap: Missing target >20%', function(c) { return c.segment === 'Missing target >20%'; }],
-    ['Gap: Targeted - low spend', function(c) { return c.segment === 'Targeted - low spend'; }]
-  ];
-  // One segment per bid strategy type actually present.
-  var types = {};
-  list.forEach(function(c) { types[c.strategyType] = true; });
-  Object.keys(types).sort().forEach(function(t) {
-    defs.push(['Strategy: ' + prettyStrategyType_(t),
-               function(c) { return c.strategyType === t; }]);
-  });
-
-  var headers = ['Segment', 'Campaigns', 'Cost 60d', '% Spend',
-                 primaryMetric + ' 60d', primaryMetric + ' 30d',
-                 primaryMetric + ' 14d', primaryMetric + ' 7d',
-                 'Decay', 'Commentary'];
-  sh.getRange(3, 1, 1, headers.length).setValues([headers]);
-  headerBand_(sh, 3, headers.length);
-
-  var out = [];
-  defs.forEach(function(def) {
-    var members = list.filter(def[1]);
-    if (!members.length) return;
-    // Cost-weighted by construction: sum the raw components per window, then
-    // take the ratio of sums — never average the per-campaign ratios.
-    function agg(key) {
-      var t = { cost: 0, value: 0, conv: 0 };
-      members.forEach(function(c) {
-        var w = key === 'base' ? c.base : c[key];
-        if (!w) return;
-        t.cost += w.cost; t.value += w.value; t.conv += w.conv;
-      });
-      return t;
-    }
-    var b = agg('base'), a30 = agg('w30'), a14 = agg('w14'), a7 = agg('w7');
-    var m60 = metricOf_(b, primaryMetric), m30 = metricOf_(a30, primaryMetric);
-    var m14 = metricOf_(a14, primaryMetric), m7 = metricOf_(a7, primaryMetric);
-    var decay = null;
-    if (m30 != null && m30 !== 0 && m7 != null) {
-      decay = primaryMetric === 'ROAS' ? (m7 - m30) / m30 : (m30 - m7) / m30;
-    }
-    out.push([
-      def[0], members.length, Math.round(b.cost),
-      totalCost > 0 ? b.cost / totalCost : 0,
-      m60 != null ? round2_(m60) : '', m30 != null ? round2_(m30) : '',
-      m14 != null ? round2_(m14) : '', m7 != null ? round2_(m7) : '',
-      decay != null ? decay : '',
-      segmentCommentary_(def[0], members.length, b, totalCost, decay, primaryMetric)
-    ]);
-  });
-
-  if (out.length) {
-    sh.getRange(4, 1, out.length, headers.length).setValues(out);
-    sh.getRange(4, 3, out.length, 1).setNumberFormat('#,##0');
-    sh.getRange(4, 4, out.length, 1).setNumberFormat('0.0%');
-    sh.getRange(4, 5, out.length, 4).setNumberFormat('#,##0.00');
-    sh.getRange(4, 9, out.length, 1).setNumberFormat('0.0%');
-    sh.getRange(4, 10, out.length, 1).setWrap(true);
-
-    var n = out.length;
-    // Bar chart: 60d cost by segment (pink).
-    insertChartSafe_(sh, function() {
-      return sh.newChart().setChartType(Charts.ChartType.BAR)
-          .addRange(sh.getRange(3, 1, n + 1, 1))
-          .addRange(sh.getRange(3, 3, n + 1, 1))
-          .setPosition(4, 12, 0, 0)
-          .setOption('title', 'Cost 60d by segment (' + currency + ')')
-          .setOption('colors', [COLORS.PINK])
-          .setOption('width', 520).setOption('height', 20 * n + 160)
-          .setOption('legend', { position: 'none' })
-          .build();
-    });
-    // Column chart: 30d vs 7d metric by segment (pink primary, black comparison).
-    insertChartSafe_(sh, function() {
-      return sh.newChart().setChartType(Charts.ChartType.COLUMN)
-          .addRange(sh.getRange(3, 1, n + 1, 1))
-          .addRange(sh.getRange(3, 6, n + 1, 1))
-          .addRange(sh.getRange(3, 8, n + 1, 1))
-          .setPosition(Math.max(20, n + 6), 12, 0, 0)
-          .setOption('title', primaryMetric + ' 30d vs 7d by segment')
-          .setOption('colors', [COLORS.PINK, COLORS.BLACK])
-          .setOption('width', 520).setOption('height', 320)
-          .setOption('legend', { position: 'bottom' })
-          .build();
-    });
-  } else {
-    sh.getRange(4, 1).setValue('No campaigns to segment.');
-  }
-
-  sh.setColumnWidths(1, 1, 230);
-  sh.setColumnWidths(2, 8, 100);
-  sh.setColumnWidths(10, 1, 380);
-  finishSheet_(sh);
-}
-
-function segmentCommentary_(name, count, base, totalCost, decay, metric) {
-  var parts = [count + ' campaign' + (count === 1 ? '' : 's')];
-  if (totalCost > 0) {
-    parts.push(Math.round(100 * base.cost / totalCost) + '% of 60d spend');
-  }
-  if (decay != null) {
-    if (decay <= -0.20) {
-      parts.push(metric + ' deteriorating sharply into the last 7 days (' +
-                 Math.round(decay * 100) + '%)');
-    } else if (decay <= -0.10) {
-      parts.push(metric + ' softening into the last 7 days (' +
-                 Math.round(decay * 100) + '%)');
-    } else if (decay >= 0.10) {
-      parts.push(metric + ' improving into the last 7 days (+' +
-                 Math.round(decay * 100) + '%)');
-    } else {
-      parts.push(metric + ' steady across windows');
-    }
-  } else {
-    parts.push('not enough recent data for a trend read');
-  }
-  return parts.join('; ') + '.';
-}
-
-// ---------------------------------------------------------------------------
-// TAB 5: METHOD & DEFINITIONS
-// ---------------------------------------------------------------------------
-function buildMethodTab_(ss, ranges, primaryMetric, currency) {
-  var sh = resetSheet_(ss, 'Method & Definitions');
-  title_(sh, 1, 'Method & Definitions', 12);
-
-  var rows = [
-    ['Windows', 'Four windows, all ending ' + ranges.base.end + ' (yesterday, ' +
-     'account timezone): a 60-day base for classification and spend weighting, ' +
-     'plus rolling 30/14/7-day windows. They are read together so steady-state ' +
-     'performance (30d) can be separated from recent movement (7d) without ' +
-     'over-reacting to either.'],
-    ['Windowed ROAS/CPA are computed, not read', 'There is no native 30/14/7-day ' +
-     'ROAS or CPA column in Google Ads. The script runs the same campaign query ' +
-     'once per window, pulls raw cost / conversion value / conversions, joins the ' +
-     'results by campaign ID in memory, and computes ROAS = value/cost and ' +
-     'CPA = cost/conversions per window. Divide-by-zero renders blank, never ' +
-     'Infinity or NaN.'],
-    ['Segments', 'Segments are defined only by target status, budget status, gap ' +
-     'band and bid strategy type. No inference is made from campaign names.'],
-    ['Low-spend floor', 'Campaigns under ' + CONFIG.LOW_SPEND_FLOOR + ' ' + currency +
-     ' of 60-day cost are never flagged or prioritised: 7-day ratios on small ' +
-     'spend are noise. Their figures are still shown for context.'],
-    ['Gap vs Target', 'Direction-aware so beating the target always reads ' +
-     'positive: ROAS gap = (actual - target)/target; CPA gap = (target - actual)/target.'],
-    ['Trend 30d>7d (decay)', 'ROAS: (ROAS7 - ROAS30)/ROAS30. CPA equivalent: ' +
-     '(CPA30 - CPA7)/CPA30. Negative always means deteriorating. Priority: ' +
-     '<= -20% = "1 - Act now"; -10% to -20% = "2 - Watch"; else "3 - Stable".'],
-    ['Timing', '"Before 17 Aug" when a campaign is budget-limited (target and ' +
-     'budget cap interact once target-based bidding changes on 17 Aug 2026); ' +
-     '"After 17 Aug" otherwise.'],
-    ['Budget-limited (derived)', 'The UI\'s "Limited by budget" status is not ' +
-     'reliably exposed to scripts, so it is derived: last-7-day average daily ' +
-     'spend >= ' + Math.round(CONFIG.BUDGET_LIMITED_THRESHOLD * 100) + '% of ' +
-     'daily budget. Shared budgets can be under-flagged by this method.'],
-    ['Averages', 'Every rollup that averages a rate is cost-weighted (ratio of ' +
-     'sums), never a simple average of ratios.'],
-    ['Primary metric', 'This account reads as a ' + primaryMetric + ' account: ' +
-     'the metric carrying the most targeted 60-day spend. Campaigns with their ' +
-     'own target are always measured on that target\'s metric.'],
-    ['What this data cannot tell us', 'Attribution completeness and lag; the ' +
-     'intended role of each campaign (prospecting vs brand vs clearance); ' +
-     'whether a target was set deliberately or inherited; and the promo ' +
-     'calendar. Treat the sheet as a map, not a verdict.']
-  ];
-
-  sh.getRange(3, 1, 1, 2).setValues([['Topic', 'Definition']]);
-  headerBand_(sh, 3, 2);
-  sh.getRange(4, 1, rows.length, 2).setValues(rows).setWrap(true)
-      .setVerticalAlignment('top');
-  sh.getRange(4, 1, rows.length, 1).setFontWeight('bold');
-  sh.setColumnWidths(1, 1, 240);
-  sh.setColumnWidths(2, 1, 760);
   finishSheet_(sh);
 }
 
