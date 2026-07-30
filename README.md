@@ -17,7 +17,11 @@ stale targets start steering real spend. The audit finds the drift between
 stated targets and 30-day actuals and writes a three-tab Google Sheet:
 
 1. **Summary** — with-target vs no-target pie charts (campaign count, 60d cost,
-   60d conversions), a full campaign table with trend-based priority, and a
+   60d conversions); an interactive weekly chart (last 8 weeks) of stated
+   target vs actual for targeted campaigns with a live campaign-filter
+   dropdown, an in-sheet linear decay trend line and an estimated decay/week
+   figure (all formula-driven, so filtering needs no script re-run); a full
+   campaign table with 30/14/7-day actuals and trend-based priority; and a
    compact "How to read this" reference block.
 2. **Actionable** — one row per campaign whose target should move, with timing
    ("Before 17 Aug" for budget-limited campaigns — the directly-affected set),
