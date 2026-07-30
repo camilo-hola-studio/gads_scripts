@@ -523,8 +523,11 @@ function buildSummaryTab_(ss, list, account, ranges, primaryMetric, currency,
         .addRange(sh.getRange(4, 14, 3, 2))
         .setPosition(4, 1, 0, 0)
         .setOption('title', 'Campaigns: with vs without target')
-        // 'slices' is what Sheets actually honours for pie colors — the
-        // 'colors' array alone gets overridden by the sheet theme.
+        // Without setNumHeaders the header row is treated as a slice, which
+        // shifts every slice color off by one (that's how a theme yellow
+        // leaked in). 'slices' is what Sheets honours for pie colors; the
+        // 'colors' array alone can be overridden by the sheet theme.
+        .setNumHeaders(1)
         .setOption('colors', [COLORS.PINK, COLORS.BLACK])
         .setOption('slices', { 0: { color: COLORS.PINK },
                                1: { color: COLORS.BLACK } })
@@ -537,8 +540,11 @@ function buildSummaryTab_(ss, list, account, ranges, primaryMetric, currency,
         .addRange(sh.getRange(8, 14, 3, 2))
         .setPosition(4, 4, 0, 0)
         .setOption('title', 'Cost 60d: with vs without target')
-        // 'slices' is what Sheets actually honours for pie colors — the
-        // 'colors' array alone gets overridden by the sheet theme.
+        // Without setNumHeaders the header row is treated as a slice, which
+        // shifts every slice color off by one (that's how a theme yellow
+        // leaked in). 'slices' is what Sheets honours for pie colors; the
+        // 'colors' array alone can be overridden by the sheet theme.
+        .setNumHeaders(1)
         .setOption('colors', [COLORS.PINK, COLORS.BLACK])
         .setOption('slices', { 0: { color: COLORS.PINK },
                                1: { color: COLORS.BLACK } })
@@ -551,8 +557,11 @@ function buildSummaryTab_(ss, list, account, ranges, primaryMetric, currency,
         .addRange(sh.getRange(12, 14, 3, 2))
         .setPosition(4, 7, 0, 0)
         .setOption('title', 'Conversions 60d: with vs without target')
-        // 'slices' is what Sheets actually honours for pie colors — the
-        // 'colors' array alone gets overridden by the sheet theme.
+        // Without setNumHeaders the header row is treated as a slice, which
+        // shifts every slice color off by one (that's how a theme yellow
+        // leaked in). 'slices' is what Sheets honours for pie colors; the
+        // 'colors' array alone can be overridden by the sheet theme.
+        .setNumHeaders(1)
         .setOption('colors', [COLORS.PINK, COLORS.BLACK])
         .setOption('slices', { 0: { color: COLORS.PINK },
                                1: { color: COLORS.BLACK } })
@@ -706,16 +715,23 @@ function buildWeeklySection_(sh, primaryMetric, currency, weekly) {
       '=IF($B$18="All targeted campaigns","<>",$B$18)')
       .setFontColor('#999999').setFontSize(8);
 
-  // --- Chart source table (col N..Q): Week | Target | Actual | Decay trend. ---
+  // --- Chart source table (col M..R): wk# | Week | Target | Actual |
+  // Gap vs target | Decay trend. The wk# column exists because Sheets does
+  // not reliably expand ROW(range) into an array inside SLOPE/TREND — a real
+  // index column makes the regression formulas dependable. ---
+  var IDX_COL = 13; // M
   var TBL_COL = 14; // N
   var tblStart = 19;
-  sh.getRange(18, TBL_COL, 1, 4).setValues(
-      [['Week', 'Target', 'Actual', 'Decay trend']]);
+  sh.getRange(18, IDX_COL, 1, 6).setValues(
+      [['wk#', 'Week', 'Target', 'Actual', 'Gap vs target', 'Decay trend']]);
   var crit = ',' + rawA1('T') + ',$Q$17';
-  var yA1 = '$P$' + tblStart + ':$P$' + (tblStart + weeks.length - 1);
+  var lastRow = tblStart + weeks.length - 1;
+  var yA1 = '$P$' + tblStart + ':$P$' + lastRow;   // Actual column
+  var xA1 = '$M$' + tblStart + ':$M$' + lastRow;   // wk# column
   weeks.forEach(function(w, i) {
     var row = tblStart + i;
     var wk = ',' + rawA1('S') + ',$N' + row;
+    sh.getRange(row, IDX_COL).setValue(i + 1);
     sh.getRange(row, TBL_COL).setValue(w);
     sh.getRange(row, TBL_COL + 1).setFormula(
         '=IFERROR(SUMIFS(' + rawA1('X') + wk + crit + ')/SUMIFS(' +
@@ -725,34 +741,54 @@ function buildWeeklySection_(sh, primaryMetric, currency, weekly) {
           rawA1('U') + wk + crit + '),"")'
         : '=IFERROR(SUMIFS(' + rawA1('U') + wk + crit + ')/SUMIFS(' +
           rawA1('W') + wk + crit + '),"")');
-    sh.getRange(row, TBL_COL + 3).setFormula(
-        '=IFERROR(TREND(' + yA1 + ',ROW(' + yA1 + '),ROW($P' + row + ')),"")');
+    // Gap vs target, same direction convention as every other tab: beating
+    // the target reads positive for both ROAS and CPA.
+    sh.getRange(row, TBL_COL + 3).setFormula(primaryMetric === 'ROAS'
+        ? '=IFERROR(($P' + row + '-$O' + row + ')/$O' + row + ',"")'
+        : '=IFERROR(($O' + row + '-$P' + row + ')/$O' + row + ',"")');
+    sh.getRange(row, TBL_COL + 4).setFormula(
+        '=IFERROR(TREND(' + yA1 + ',' + xA1 + ',$M' + row + '),"")');
   });
-  sh.getRange(tblStart, TBL_COL + 1, weeks.length, 3)
+  sh.getRange(tblStart, IDX_COL, weeks.length, 1)
+      .setFontColor('#999999').setFontSize(8);
+  sh.getRange(tblStart, TBL_COL + 1, weeks.length, 2)
+      .setNumberFormat('#,##0.00');
+  sh.getRange(tblStart, TBL_COL + 3, weeks.length, 1).setNumberFormat('0.0%');
+  sh.getRange(tblStart, TBL_COL + 4, weeks.length, 1)
       .setNumberFormat('#,##0.00');
 
   // Estimated decay per week, live with the filter. CPA slope is inverted so
   // negative always reads "deteriorating".
-  sh.getRange(18, 5).setValue('Est. decay per week (negative = deteriorating):')
-      .setFontWeight('bold');
+  sh.getRange(18, 5, 1, 3).merge()
+      .setValue('Est. decay per week (negative = deteriorating):')
+      .setFontWeight('bold').setHorizontalAlignment('right');
   sh.getRange(18, 8).setFormula(
       '=IFERROR(' + (primaryMetric === 'CPA' ? '-' : '') + 'SLOPE(' + yA1 +
-      ',ROW(' + yA1 + '))/AVERAGE(' + yA1 + '),"")')
-      .setNumberFormat('0.0%').setFontWeight('bold');
+      ',' + xA1 + ')/AVERAGE(' + yA1 + '),"")')
+      .setNumberFormat('0.0%').setFontWeight('bold')
+      .setFontColor(COLORS.PINK).setBackground('#FDE7F3');
 
   insertChartSafe_(sh, function() {
     return sh.newChart().setChartType(Charts.ChartType.LINE)
         .addRange(sh.getRange(18, TBL_COL, weeks.length + 1, 1))
-        .addRange(sh.getRange(18, TBL_COL + 1, weeks.length + 1, 3))
+        .addRange(sh.getRange(18, TBL_COL + 1, weeks.length + 1, 4))
+        // Without this the header row is charted as data and the legend
+        // shows unnamed swatches.
+        .setNumHeaders(1)
         .setPosition(19, 1, 0, 0)
         .setOption('title', 'Weekly ' + primaryMetric +
                    ' vs stated target - use the Campaign filter to drill in')
-        .setOption('colors', [COLORS.BLACK, COLORS.PINK, '#9E9E9E'])
+        .setOption('colors', [COLORS.BLACK, COLORS.PINK, COLORS.NAVY, '#9E9E9E'])
         .setOption('series', {
           0: { color: COLORS.BLACK },                          // Target
           1: { color: COLORS.PINK },                           // Actual
-          2: { color: '#9E9E9E', lineDashStyle: [4, 4] }       // Decay trend
+          // Gap % lives on the right-hand axis — it's a ratio, not a
+          // ROAS/CPA level, so it can't share the left axis scale.
+          2: { color: COLORS.NAVY, lineDashStyle: [2, 2],
+               targetAxisIndex: 1 },
+          3: { color: '#9E9E9E', lineDashStyle: [4, 4] }       // Decay trend
         })
+        .setOption('vAxes', { 1: { format: 'percent' } })
         .setOption('width', 660).setOption('height', 320)
         .setOption('legend', { position: 'bottom' })
         .build();
