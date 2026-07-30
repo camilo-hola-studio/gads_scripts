@@ -60,6 +60,8 @@ var COLORS = {
   PINK: '#E72D9E',   // header bands, primary chart series, "with target"
   BLACK: '#1A1A1A',  // comparison chart series, "no target"
   NAVY: '#0D2952',   // titles
+  YELLOW: '#F4B400', // gap-vs-target series (contrast against pink/black)
+  BORDER: '#D9D9D9', // light grey table borders
   WHITE: '#FFFFFF',
   RED: '#F4C7C3',    // trend <= -20%
   AMBER: '#FCE8B2',  // trend -10% .. -20%
@@ -610,6 +612,7 @@ function buildSummaryTab_(ss, list, account, ranges, primaryMetric, currency,
       else if (c.trend <= -0.10) cell.setBackground(COLORS.AMBER);
       else cell.setBackground(COLORS.GREEN);
     });
+    tableStyle_(sh, hdrRow, 1, out.length + 1, headers.length);
   } else {
     sh.getRange(hdrRow + 1, 1).setValue('No enabled campaigns found in this account.');
   }
@@ -648,6 +651,7 @@ function buildSummaryTab_(ss, list, account, ranges, primaryMetric, currency,
   notes.forEach(function(n, i) {
     var cell = sh.getRange(noteRow + i, 1, 1, 9);
     cell.merge().setValue(n).setWrap(true).setFontSize(9)
+        .setVerticalAlignment('middle')
         .setFontColor(i === 0 ? COLORS.NAVY : '#666666');
     if (i === 0) cell.setFontWeight('bold');
     else cell.setFontStyle('italic');
@@ -756,6 +760,7 @@ function buildWeeklySection_(sh, primaryMetric, currency, weekly) {
   sh.getRange(tblStart, TBL_COL + 3, weeks.length, 1).setNumberFormat('0.0%');
   sh.getRange(tblStart, TBL_COL + 4, weeks.length, 1)
       .setNumberFormat('#,##0.00');
+  tableStyle_(sh, 18, IDX_COL, weeks.length + 1, 6);
 
   // Estimated decay per week, live with the filter. CPA slope is inverted so
   // negative always reads "deteriorating".
@@ -778,15 +783,15 @@ function buildWeeklySection_(sh, primaryMetric, currency, weekly) {
         .setPosition(19, 1, 0, 0)
         .setOption('title', 'Weekly ' + primaryMetric +
                    ' vs stated target - use the Campaign filter to drill in')
-        .setOption('colors', [COLORS.BLACK, COLORS.PINK, COLORS.NAVY, '#9E9E9E'])
+        .setOption('colors', [COLORS.BLACK, COLORS.PINK, COLORS.YELLOW,
+                              '#9E9E9E'])
         .setOption('series', {
           0: { color: COLORS.BLACK },                          // Target
           1: { color: COLORS.PINK },                           // Actual
           // Gap % lives on the right-hand axis — it's a ratio, not a
           // ROAS/CPA level, so it can't share the left axis scale.
-          2: { color: COLORS.NAVY, lineDashStyle: [2, 2],
-               targetAxisIndex: 1 },
-          3: { color: '#9E9E9E', lineDashStyle: [4, 4] }       // Decay trend
+          2: { color: COLORS.YELLOW, targetAxisIndex: 1 },
+          3: { color: '#9E9E9E', lineDashStyle: [2, 4] }       // Decay trend (dotted)
         })
         .setOption('vAxes', { 1: { format: 'percent' } })
         .setOption('width', 660).setOption('height', 320)
@@ -835,6 +840,7 @@ function buildActionableTab_(ss, list, primaryMetric, currency) {
     sh.getRange(4, 2, out.length, 1).setNumberFormat('#,##0.00');
     sh.getRange(4, 3, out.length, 1).setNumberFormat('#,##0.00');
     sh.getRange(4, 6, out.length, 1).setNumberFormat('#,##0.00');
+    tableStyle_(sh, 3, 1, out.length + 1, headers.length);
   } else {
     sh.getRange(4, 1).setValue('Nothing actionable right now - no targeted, ' +
         'above-floor campaign is >20% off target or decaying >=20%.');
@@ -923,6 +929,7 @@ function buildCampaignDataTab_(ss, list, primaryMetric, currency, totalCost) {
     sh.getRange(3, 9, out.length, 1).setNumberFormat('0.0%');
     sh.getRange(3, 11, out.length, 4).setNumberFormat('#,##0.00');
     sh.getRange(3, 15, out.length, 2).setNumberFormat('0.0%');
+    tableStyle_(sh, 2, 1, out.length + 1, headers.length);
   } else {
     sh.getRange(3, 1).setValue('No enabled campaigns found.');
   }
@@ -987,6 +994,15 @@ function subtitle_(sh, row, text) {
 function headerBand_(sh, row, ncols) {
   sh.getRange(row, 1, 1, ncols).setBackground(COLORS.PINK)
       .setFontColor(COLORS.WHITE).setFontWeight('bold');
+}
+
+// Shared table finish: light grey borders all round + vertical centring, so
+// wrapped cells never leave neighbours pinned to the top or bottom.
+function tableStyle_(sh, row, col, numRows, numCols) {
+  sh.getRange(row, col, numRows, numCols)
+      .setBorder(true, true, true, true, true, true, COLORS.BORDER,
+                 SpreadsheetApp.BorderStyle.SOLID)
+      .setVerticalAlignment('middle');
 }
 
 function finishSheet_(sh) {
