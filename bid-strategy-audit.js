@@ -520,7 +520,7 @@ function buildSummaryTab_(ss, list, account, ranges, primaryMetric, currency,
 
   // Three native pie charts: with-target vs no-target split by campaign
   // count, 60d cost, 60d conversions.
-  insertChartSafe_(sh, function() {
+  insertChartSafe_(sh, 'Campaigns: with vs without target', function() {
     return sh.newChart().setChartType(Charts.ChartType.PIE)
         .addRange(sh.getRange(4, 14, 3, 2))
         .setPosition(4, 1, 0, 0)
@@ -537,7 +537,7 @@ function buildSummaryTab_(ss, list, account, ranges, primaryMetric, currency,
         .setOption('legend', { position: 'bottom' })
         .build();
   });
-  insertChartSafe_(sh, function() {
+  insertChartSafe_(sh, 'Cost 60d: with vs without target', function() {
     return sh.newChart().setChartType(Charts.ChartType.PIE)
         .addRange(sh.getRange(8, 14, 3, 2))
         .setPosition(4, 4, 0, 0)
@@ -554,7 +554,7 @@ function buildSummaryTab_(ss, list, account, ranges, primaryMetric, currency,
         .setOption('legend', { position: 'bottom' })
         .build();
   });
-  insertChartSafe_(sh, function() {
+  insertChartSafe_(sh, 'Conversions 60d: with vs without target', function() {
     return sh.newChart().setChartType(Charts.ChartType.PIE)
         .addRange(sh.getRange(12, 14, 3, 2))
         .setPosition(4, 7, 0, 0)
@@ -642,7 +642,9 @@ function buildSummaryTab_(ss, list, account, ranges, primaryMetric, currency,
       'weeks (newest week may be partial). It is formula-driven: change the Campaign ' +
       'filter dropdown and the target, actual, decay trend line and est. decay/week all ' +
       'recompute live - no script re-run needed. Target is cost-weighted when viewing all ' +
-      'campaigns.',
+      'campaigns. Charts are created once and then left alone on re-runs (data refreshes ' +
+      'underneath), so manual styling in the chart editor sticks; delete a chart to have ' +
+      'the script rebuild it.',
     'Decay on low-spend campaigns (< ' + CONFIG.LOW_SPEND_FLOOR + ' ' + currency +
       ' over 60d) is volatile — shown for context, never flagged for action. All rollups are ' +
       'cost-weighted. The data cannot see: attribution lag, intended campaign role, whether a ' +
@@ -773,7 +775,9 @@ function buildWeeklySection_(sh, primaryMetric, currency, weekly) {
       .setNumberFormat('0.0%').setFontWeight('bold')
       .setFontColor(COLORS.PINK).setBackground('#FDE7F3');
 
-  insertChartSafe_(sh, function() {
+  var chartTitle = 'Weekly ' + primaryMetric +
+      ' vs stated target - use the Campaign filter to drill in';
+  insertChartSafe_(sh, chartTitle, function() {
     return sh.newChart().setChartType(Charts.ChartType.LINE)
         .addRange(sh.getRange(18, TBL_COL, weeks.length + 1, 1))
         .addRange(sh.getRange(18, TBL_COL + 1, weeks.length + 1, 4))
@@ -781,8 +785,7 @@ function buildWeeklySection_(sh, primaryMetric, currency, weekly) {
         // shows unnamed swatches.
         .setNumHeaders(1)
         .setPosition(19, 1, 0, 0)
-        .setOption('title', 'Weekly ' + primaryMetric +
-                   ' vs stated target - use the Campaign filter to drill in')
+        .setOption('title', chartTitle)
         .setOption('colors', [COLORS.BLACK, COLORS.PINK, COLORS.YELLOW,
                               '#9E9E9E'])
         .setOption('series', {
@@ -959,7 +962,10 @@ function resetSheet_(ss, name) {
   if (!sh) {
     sh = ss.insertSheet(name);
   } else {
-    sh.getCharts().forEach(function(ch) { sh.removeChart(ch); });
+    // Deliberately does NOT remove charts: they point at fixed cell ranges
+    // that each run rewrites in place, so existing charts stay live AND any
+    // manual styling done in the chart editor survives re-runs. Delete a
+    // chart by hand to have the script recreate it fresh.
     sh.clear();
     sh.setFrozenRows(0);
     sh.setFrozenColumns(0);
@@ -1011,10 +1017,18 @@ function finishSheet_(sh) {
   sh.getRange(1, 1, rows, sh.getMaxColumns()).setFontFamily('Arial');
 }
 
-// Charts degrade gracefully: if the Charts service ever misbehaves the run
-// keeps its tables and logs a warning instead of dying.
-function insertChartSafe_(sh, buildFn) {
+// Insert a chart only if one with the same title isn't already on the sheet
+// (so re-runs refresh the data underneath but never duplicate charts or wipe
+// manual styling). Degrades gracefully: if the Charts service misbehaves the
+// run keeps its tables and logs a warning instead of dying.
+function insertChartSafe_(sh, title, buildFn) {
   try {
+    var charts = sh.getCharts();
+    for (var i = 0; i < charts.length; i++) {
+      var t = '';
+      try { t = charts[i].getOptions().get('title'); } catch (ignored) {}
+      if (t === title) return; // already there — keep it as-is
+    }
     sh.insertChart(buildFn());
   } catch (e) {
     Logger.log('Chart skipped on "' + sh.getName() + '": ' + e);
