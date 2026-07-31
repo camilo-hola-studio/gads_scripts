@@ -932,6 +932,18 @@ function buildCampaignDataTab_(ss, list, primaryMetric, currency, totalCost) {
     sh.getRange(3, 9, out.length, 1).setNumberFormat('0.0%');
     sh.getRange(3, 11, out.length, 4).setNumberFormat('#,##0.00');
     sh.getRange(3, 15, out.length, 2).setNumberFormat('0.0%');
+
+    // Full-row watercolour wash on campaigns that need acting on, so they
+    // jump out of a long list. Soft pink for the actionable set (the same
+    // campaigns that appear on the Actionable tab), deepening slightly when
+    // the trend also says "1 - Act now".
+    list.forEach(function(c, i) {
+      if (!c.actionable) return;
+      var urgent = c.priority === '1 - Act now';
+      sh.getRange(3 + i, 1, 1, headers.length)
+          .setBackground(urgent ? '#FBD3EA' : '#FDE7F3');
+    });
+
     tableStyle_(sh, 2, 1, out.length + 1, headers.length);
   } else {
     sh.getRange(3, 1).setValue('No enabled campaigns found.');
