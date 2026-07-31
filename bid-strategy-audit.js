@@ -601,6 +601,16 @@ function buildSummaryTab_(ss, list, account, ranges, primaryMetric, currency,
     sh.getRange(hdrRow + 1, 4, out.length, 4).setNumberFormat('#,##0.00');
     sh.getRange(hdrRow + 1, 8, out.length, 1).setNumberFormat('0.0%');
 
+    // Same watercolour wash as Campaign Data: full row tinted for the
+    // actionable set, a shade deeper when the trend says "1 - Act now".
+    // Applied before the trend-cell colours so those keep their own fill.
+    list.forEach(function(c, i) {
+      if (!c.actionable) return;
+      var urgent = c.priority === '1 - Act now';
+      sh.getRange(hdrRow + 1 + i, 1, 1, headers.length)
+          .setBackground(urgent ? '#FBD3EA' : '#FDE7F3');
+    });
+
     // "Conditional formatting" applied deterministically per row: red/amber/
     // green on the priority thresholds for flagged rows, grey for no-target
     // and low-spend rows.
