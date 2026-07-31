@@ -46,3 +46,26 @@ Setup: paste the file into a new script, authorise, optionally set
 `SPREADSHEET_URL` in the config block (blank = a new sheet is created and its
 URL logged), run. Deployable unchanged across ROAS-target and CPA-target
 accounts.
+
+### `mcc-bid-strategy-audit.js`
+
+The same audit, installed **once at manager (MCC) level** and fanned out
+across child accounts with `executeInParallel` — built to be shared with
+other agencies as-is:
+
+- Each child account gets its own three-tab audit spreadsheet (identical to
+  the single-account script's output).
+- The MCC gets an **Overview** spreadsheet: one row per account, ranked most
+  urgent first ("1 – Act now" campaign count, then actionable count, then
+  spend), with the account-level 30d>7d trend and a link to each audit sheet.
+  A hidden Registry tab maps CID → audit sheet URL so re-runs write into the
+  same sheets instead of creating new ones.
+- `LOW_SPEND_FLOOR` defaults to **0** (no minimum spend); agencies raise it
+  in the config block if small campaigns make the flags noisy.
+- Optional targeting via `ACCOUNT_IDS` or `ACCOUNT_LABEL`. Hard cap of 50
+  accounts per run (a Google Ads Scripts limit) — batch bigger MCCs with
+  labels.
+
+Setup: paste into a script **in the manager account**, authorise, run once
+with `MASTER_SPREADSHEET_URL` blank, then paste the logged Overview URL into
+the config and save. Schedule weekly if wanted.
