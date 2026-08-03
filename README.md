@@ -1,5 +1,13 @@
 # gads_scripts
 
+**Read-only.** Nothing in this repo changes a Google Ads account: the scripts
+only read reporting data and write results to Google Sheets in the
+authorising user's own Drive. No bids, budgets, targets, statuses or
+structures are ever modified, and no data is sent anywhere outside that
+user's Google account. (Google Ads Scripts has no read-only consent scope,
+so the authorisation prompt shows broad permissions — the code is the
+complete behaviour and is short enough to audit.)
+
 Google Ads Scripts used across Hola Studio accounts. Each script is a single
 self-contained `.js` file that pastes straight into Google Ads at
 **Tools > Bulk actions > Scripts** — no build step, no npm, no account-specific

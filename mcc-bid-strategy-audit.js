@@ -1,6 +1,15 @@
 /**
  * BID STRATEGY AUDIT - MCC EDITION.
  *
+ * READ-ONLY: this script makes NO changes to any account, manager or child.
+ * It only reads reporting data (AdsApp.report queries and account metadata)
+ * and writes the results to Google Sheets in the authorising user's own
+ * Drive. It contains no bid, budget, target, status or structure mutations,
+ * and no calls that send data anywhere outside that user's Google account.
+ * (The authorisation prompt still shows broad Ads permissions - Google Ads
+ * Scripts has no read-only consent scope - but the code below is the
+ * complete behaviour and can be audited.)
+ *
  * Runs the pre-17-Aug-2026 bid strategy audit across every account under a
  * manager (MCC) account: each child account gets its own three-tab audit
  * spreadsheet (Summary / Actionable / Campaign Data), and the MCC gets an

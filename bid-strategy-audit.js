@@ -1,6 +1,14 @@
 /**
  * BID STRATEGY AUDIT — pre-17-Aug-2026 target-based-bidding change.
  *
+ * READ-ONLY: this script makes NO changes to the Google Ads account. It only
+ * reads reporting data (AdsApp.report queries and account metadata) and
+ * writes the results to a Google Sheet in your own Drive. It contains no
+ * bid, budget, target, status or structure mutations, and no calls that send
+ * data anywhere outside your Google account. (The authorisation prompt still
+ * shows broad Ads permissions — Google Ads Scripts has no read-only consent
+ * scope — but the code below is the complete behaviour and can be audited.)
+ *
  * THE CHANGE (https://support.google.com/google-ads/answer/17061251): from
  * 17 August 2026, budget-limited campaigns using Target CPA / Target ROAS
  * start bidding to the TARGET YOU TYPED IN, not the better number the
