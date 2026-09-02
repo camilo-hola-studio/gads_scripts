@@ -369,9 +369,13 @@ function ratios_(m) {
   if (cart) {
     out.poas = m.cost > 0 ? m.grossProfit / m.cost : null;
     out.margin = m.value > 0 ? m.grossProfit / m.value : null;
+    // Margin on the orders that actually carry cart data - the true product
+    // margin, and the number to calibrate CONFIG.FALLBACK_MARGIN against.
+    out.cartMargin = m.revenue > 0 ? m.grossProfit / m.revenue : null;
   } else {
     out.poas = (m.value > 0 || m.cost === 0) ? null : 0;
     out.margin = null;
+    out.cartMargin = null;
   }
 
   // Share of conversion value that has cart data behind it. Cart revenue can
@@ -482,7 +486,8 @@ function writeDetailTab_(ss, campaigns, meta) {
     ['Cart revenue (' + cur + ')', FMT.MONEY], ['Orders', FMT.INT],
     ['Avg order value (' + cur + ')', FMT.MONEY],
     ['ROAS', FMT.RATIO], ['POAS (reported)', FMT.RATIO], ['POAS (est.)', FMT.RATIO],
-    ['Margin', FMT.PCT], ['Profit coverage', FMT.PCT], ['ROAS - POAS gap', FMT.RATIO],
+    ['Margin', FMT.PCT], ['Cart margin', FMT.PCT], ['Profit coverage', FMT.PCT],
+    ['ROAS - POAS gap', FMT.RATIO],
     ['Cart data', FMT.TEXT], ['Notes', FMT.TEXT]
   ];
   var rows = [];
@@ -494,8 +499,8 @@ function writeDetailTab_(ss, campaigns, meta) {
         m.impressions, m.clicks, r2_(m.cost), r2_(m.conversions), r2_(m.value),
         cartVal_(x, m.grossProfit), cartVal_(x, m.cogs), cartVal_(x, m.revenue),
         cartVal_(x, m.orders), cartVal_(x, m.aov),
-        r2_(x.roas), r2_(x.poas), r2_(x.estPoas), r4_(x.margin), r4_(x.coverage),
-        r2_(x.gap), x.hasCart ? 'Yes' : (m.value > 0 ? 'No' : ''),
+        r2_(x.roas), r2_(x.poas), r2_(x.estPoas), r4_(x.margin), r4_(x.cartMargin),
+        r4_(x.coverage), r2_(x.gap), x.hasCart ? 'Yes' : (m.value > 0 ? 'No' : ''),
         m.notes.join('; ')
       ]);
     });
@@ -506,7 +511,8 @@ function writeDetailTab_(ss, campaigns, meta) {
   writeTable_(ss, TABS.DETAIL, meta,
       'One row per campaign per complete week. POAS (reported) is blank ' +
       'where conversion value has no cart data; POAS (est.) applies ' +
-      Math.round(CONFIG.FALLBACK_MARGIN * 100) + '% margin to uncovered value.',
+      Math.round(CONFIG.FALLBACK_MARGIN * 100) + '% margin to uncovered value. ' +
+      'Margin = gross profit / conv. value; Cart margin = gross profit / cart revenue.',
       cols, rows, { notesCol: cols.length, cartCol: cols.length - 1 });
 }
 
@@ -525,6 +531,7 @@ function writeSummaryTab_(ss, campaigns, meta) {
     ['POAS latest', FMT.RATIO], ['POAS prior', FMT.RATIO], ['POAS ' + avgLabel, FMT.RATIO],
     ['Est. POAS latest', FMT.RATIO],
     ['Margin latest', FMT.PCT], ['Margin prior', FMT.PCT], ['Margin ' + avgLabel, FMT.PCT],
+    ['Cart margin latest', FMT.PCT], ['Cart margin ' + avgLabel, FMT.PCT],
     ['Profit coverage ' + avgLabel, FMT.PCT],
     ['Cart data', FMT.TEXT], ['Notes (latest week)', FMT.TEXT]
   ];
@@ -548,6 +555,7 @@ function writeSummaryTab_(ss, campaigns, meta) {
       L ? r2_(L.poas) : '', P ? r2_(P.poas) : '', CT ? r2_(CT.poas) : '',
       L ? r2_(L.estPoas) : '',
       L ? r4_(L.margin) : '', P ? r4_(P.margin) : '', CT ? r4_(CT.margin) : '',
+      L ? r4_(L.cartMargin) : '', CT ? r4_(CT.cartMargin) : '',
       r4_(T.coverage),
       cartLabel, notes.join('; ')
     ]);
@@ -556,7 +564,8 @@ function writeSummaryTab_(ss, campaigns, meta) {
   writeTable_(ss, TABS.SUMMARY, meta,
       'Latest week ' + latest + (prior ? ', prior week ' + prior : '') +
       '. Period ROAS is sum(value)/sum(cost) over all weeks; period POAS and ' +
-      'margin use only the weeks that carry cart data.',
+      'margins use only the weeks that carry cart data. Cart margin = gross ' +
+      'profit / cart revenue (use it to calibrate FALLBACK_MARGIN).',
       cols, rows, { notesCol: cols.length, cartCol: cols.length - 1 });
 }
 
@@ -571,7 +580,8 @@ function writeAccountTab_(ss, accountWeeks, meta) {
     ['Cart revenue (' + cur + ')', FMT.MONEY], ['Orders', FMT.INT],
     ['Avg order value (' + cur + ')', FMT.MONEY],
     ['ROAS', FMT.RATIO], ['POAS (reported)', FMT.RATIO], ['POAS (est.)', FMT.RATIO],
-    ['Margin', FMT.PCT], ['Profit coverage', FMT.PCT], ['ROAS - POAS gap', FMT.RATIO],
+    ['Margin', FMT.PCT], ['Cart margin', FMT.PCT], ['Profit coverage', FMT.PCT],
+    ['ROAS - POAS gap', FMT.RATIO],
     ['Notes', FMT.TEXT]
   ];
   var rows = accountWeeks.slice().reverse().map(function(m) {
@@ -581,8 +591,8 @@ function writeAccountTab_(ss, accountWeeks, meta) {
       m.impressions, m.clicks, r2_(m.cost), r2_(m.conversions), r2_(m.value),
       cartVal_(x, m.grossProfit), cartVal_(x, m.cogs), cartVal_(x, m.revenue),
       cartVal_(x, m.orders), cartVal_(x, m.aov),
-      r2_(x.roas), r2_(x.poas), r2_(x.estPoas), r4_(x.margin), r4_(x.coverage),
-      r2_(x.gap), m.notes.join('; ')
+      r2_(x.roas), r2_(x.poas), r2_(x.estPoas), r4_(x.margin), r4_(x.cartMargin),
+      r4_(x.coverage), r2_(x.gap), m.notes.join('; ')
     ];
   });
 
@@ -730,6 +740,7 @@ function sendEmail_(campaigns, meta, sheetUrl) {
         ' | POAS ' + (x.poas === null ? 'n/a' : fix2_(x.poas)) +
         ' | est. POAS ' + fix2_(x.estPoas) +
         ' | margin ' + (x.margin === null ? 'n/a' : Math.round(x.margin * 100) + '%') +
+        ' | cart margin ' + (x.cartMargin === null ? 'n/a' : Math.round(x.cartMargin * 100) + '%') +
         '\n    ' + m.notes.join('; ');
   });
   var subject = 'POAS vs ROAS - ' + meta.account + ' - week of ' + latest +
