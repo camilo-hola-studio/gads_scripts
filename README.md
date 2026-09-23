@@ -4,7 +4,9 @@
 only read reporting data and write results to Google Sheets in the
 authorising user's own Drive. No bids, budgets, targets, statuses or
 structures are ever modified, and no data is sent anywhere outside that
-user's Google account. (Google Ads Scripts has no read-only consent scope,
+user's Google account, apart from the POAS report's optional email summary,
+which is off by default and only goes to addresses you configure. (Google
+Ads Scripts has no read-only consent scope,
 so the authorisation prompt shows broad permissions — the code is the
 complete behaviour and is short enough to audit.)
 
@@ -54,6 +56,45 @@ Setup: paste the file into a new script, authorise, optionally set
 `SPREADSHEET_URL` in the config block (blank = a new sheet is created and its
 URL logged), run. Deployable unchanged across ROAS-target and CPA-target
 accounts.
+
+### `poas-vs-roas-weekly.js`
+
+Weekly campaign profitability for e-commerce accounts with
+[conversions with cart data](https://support.google.com/google-ads/answer/9028254):
+POAS (gross profit / cost) next to ROAS (conv. value / cost), one row per
+campaign per complete Mon–Sun week, so campaigns that look fine on ROAS but
+are thin on profit stand out. Targets Google Ads API v25 via `segments.week`
+on the `campaign` resource. Writes four tabs — **Campaign Summary** (latest
+week vs prior week vs N-week average for ROAS, POAS and margin), **Weekly
+Detail** (every campaign-week with impressions, clicks, cost, conversions,
+conv. value, gross profit, COGS, cart revenue, orders, AOV, ROAS, reported
+POAS, estimated POAS, margin, cart margin, profit coverage, ROAS–POAS gap)
+**Account
+Weekly** (account totals per week plus the run log) and **Charts** (three
+embedded line charts: ROAS vs reported vs estimated POAS by week, then
+conversion value and conversions as one chart each rather than one chart with
+two y-axes). Rows with conversion
+value but no cart data print a blank reported POAS and a separate estimated
+POAS from a configurable fallback margin. Notes flag POAS below threshold,
+margin moving more than 5 pts week on week, and profit coverage under 50%.
+Optional email of flagged campaigns only, off by default. The GAQL is in
+[`poas-vs-roas-weekly-queries.md`](poas-vs-roas-weekly-queries.md) for
+testing in the query builder first.
+
+Setup:
+
+1. Create a blank Google Sheet and copy its URL.
+2. In Google Ads open **Tools > Bulk actions > Scripts**, click **+**, name
+   the script and paste in `poas-vs-roas-weekly.js`.
+3. In the `CONFIG` block set `SPREADSHEET_URL` to the sheet URL.
+4. Optionally adjust `WEEKS` (13), `FALLBACK_MARGIN` (0.58),
+   `POAS_THRESHOLD` (3.0), `CAMPAIGN_INCLUDE` / `CAMPAIGN_EXCLUDE`
+   (case-insensitive regex, empty include = all campaigns).
+5. For email, set `EMAIL_ENABLED: true` and fill `EMAIL_RECIPIENTS`.
+6. Click **Authorise** and accept the Google Ads and Sheets/Gmail prompts.
+7. Click **Preview** to check the logs, then **Run**.
+8. Schedule **Weekly, Monday, 6am** or later so the previous week has closed
+   in the account's timezone.
 
 ### `mcc-bid-strategy-audit.js`
 
