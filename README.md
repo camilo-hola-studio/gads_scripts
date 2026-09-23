@@ -66,10 +66,9 @@ campaign per complete Mon–Sun week, so campaigns that look fine on ROAS but
 are thin on profit stand out. Targets Google Ads API v25 via `segments.week`
 on the `campaign` resource. Writes four tabs — **Campaign Summary** (latest
 week vs prior week vs N-week average for ROAS, POAS and margin), **Weekly
-Detail** (every campaign-week with impressions, clicks, cost, conversions,
-conv. value, gross profit, COGS, cart revenue, orders, AOV, ROAS, reported
-POAS, estimated POAS, margin, cart margin, profit coverage, ROAS–POAS gap)
-**Account
+Detail** (every campaign-week: cost, conv. value, gross profit, ROAS, reported
+POAS, estimated POAS and profit coverage — the monitoring view, kept
+deliberately narrow), **Account
 Weekly** (account totals per week plus the run log) and **Charts** (three
 embedded line charts: ROAS vs reported vs estimated POAS by week, then
 conversion value and conversions as one chart each rather than one chart with

@@ -492,17 +492,15 @@ function buildAccountWeeks_(campaigns, weeks) {
 // ---------------------------------------------------------------------------
 function writeDetailTab_(ss, campaigns, meta) {
   var cur = meta.currency;
+  // Monitoring view: the two ratios, the three numbers behind them, and the
+  // coverage that says whether reported POAS can be trusted. Everything else
+  // the query returns is in Campaign Summary.
   var cols = [
-    ['Week (Mon)', FMT.TEXT], ['Week end (Sun)', FMT.TEXT],
-    ['Campaign', FMT.TEXT], ['Type', FMT.TEXT], ['Status', FMT.TEXT],
-    ['Impressions', FMT.INT], ['Clicks', FMT.INT], ['Cost (' + cur + ')', FMT.MONEY],
-    ['Conversions', FMT.RATIO], ['Conv. value (' + cur + ')', FMT.MONEY],
-    ['Gross profit (' + cur + ')', FMT.MONEY], ['COGS (' + cur + ')', FMT.MONEY],
-    ['Cart revenue (' + cur + ')', FMT.MONEY], ['Orders', FMT.INT],
-    ['Avg order value (' + cur + ')', FMT.MONEY],
+    ['Week (Mon)', FMT.TEXT], ['Campaign', FMT.TEXT], ['Type', FMT.TEXT],
+    ['Cost (' + cur + ')', FMT.MONEY], ['Conv. value (' + cur + ')', FMT.MONEY],
+    ['Gross profit (' + cur + ')', FMT.MONEY],
     ['ROAS', FMT.RATIO], ['POAS (reported)', FMT.RATIO], ['POAS (est.)', FMT.RATIO],
-    ['Margin', FMT.PCT], ['Cart margin', FMT.PCT], ['Profit coverage', FMT.PCT],
-    ['ROAS - POAS gap', FMT.RATIO],
+    ['Profit coverage', FMT.PCT],
     ['Cart data', FMT.TEXT], ['Notes', FMT.TEXT]
   ];
   var rows = [];
@@ -510,12 +508,10 @@ function writeDetailTab_(ss, campaigns, meta) {
     c.rows.forEach(function(m) {
       var x = m.r;
       rows.push([
-        m.week, shiftDays_(m.week, 6), c.name, c.type, c.status,
-        m.impressions, m.clicks, r2_(m.cost), r2_(m.conversions), r2_(m.value),
-        cartVal_(x, m.grossProfit), cartVal_(x, m.cogs), cartVal_(x, m.revenue),
-        cartVal_(x, m.orders), cartVal_(x, m.aov),
-        r2_(x.roas), r2_(x.poas), r2_(x.estPoas), r4_(x.margin), r4_(x.cartMargin),
-        r4_(x.coverage), r2_(x.gap), x.hasCart ? 'Yes' : (m.value > 0 ? 'No' : ''),
+        m.week, c.name, c.type,
+        r2_(m.cost), r2_(m.value), cartVal_(x, m.grossProfit),
+        r2_(x.roas), r2_(x.poas), r2_(x.estPoas), r4_(x.coverage),
+        x.hasCart ? 'Yes' : (m.value > 0 ? 'No' : ''),
         m.notes.join('; ')
       ]);
     });
@@ -524,10 +520,12 @@ function writeDetailTab_(ss, campaigns, meta) {
   rows.sort(function(a, b) { return a[0] < b[0] ? 1 : a[0] > b[0] ? -1 : 0; });
 
   writeTable_(ss, TABS.DETAIL, meta,
-      'One row per campaign per complete week. POAS (reported) is blank ' +
-      'where conversion value has no cart data; POAS (est.) applies ' +
-      Math.round(CONFIG.FALLBACK_MARGIN * 100) + '% margin to uncovered value. ' +
-      'Margin = gross profit / conv. value; Cart margin = gross profit / cart revenue.',
+      'One row per campaign per complete week. POAS = gross profit / cost, ' +
+      'ROAS = conv. value / cost. POAS (reported) is blank where conversion ' +
+      'value has no gross profit behind it; POAS (est.) applies ' +
+      Math.round(CONFIG.FALLBACK_MARGIN * 100) + '% margin to the uncovered ' +
+      'share. Read reported POAS against profit coverage: at 40% coverage a ' +
+      'low POAS is missing data, not a thin campaign.',
       cols, rows, { notesCol: cols.length, cartCol: cols.length - 1 });
 }
 
@@ -587,27 +585,22 @@ function writeSummaryTab_(ss, campaigns, meta) {
 function writeAccountTab_(ss, accountWeeks, meta) {
   var cur = meta.currency;
   var cols = [
-    ['Week (Mon)', FMT.TEXT], ['Week end (Sun)', FMT.TEXT],
+    ['Week (Mon)', FMT.TEXT],
     ['Campaigns', FMT.INT], ['Campaigns with cart data', FMT.INT],
-    ['Impressions', FMT.INT], ['Clicks', FMT.INT], ['Cost (' + cur + ')', FMT.MONEY],
-    ['Conversions', FMT.RATIO], ['Conv. value (' + cur + ')', FMT.MONEY],
-    ['Gross profit (' + cur + ')', FMT.MONEY], ['COGS (' + cur + ')', FMT.MONEY],
-    ['Cart revenue (' + cur + ')', FMT.MONEY], ['Orders', FMT.INT],
-    ['Avg order value (' + cur + ')', FMT.MONEY],
+    ['Cost (' + cur + ')', FMT.MONEY], ['Conversions', FMT.RATIO],
+    ['Conv. value (' + cur + ')', FMT.MONEY],
+    ['Gross profit (' + cur + ')', FMT.MONEY],
     ['ROAS', FMT.RATIO], ['POAS (reported)', FMT.RATIO], ['POAS (est.)', FMT.RATIO],
-    ['Margin', FMT.PCT], ['Cart margin', FMT.PCT], ['Profit coverage', FMT.PCT],
-    ['ROAS - POAS gap', FMT.RATIO],
+    ['Profit coverage', FMT.PCT],
     ['Notes', FMT.TEXT]
   ];
   var rows = accountWeeks.slice().reverse().map(function(m) {
     var x = m.r;
     return [
-      m.week, shiftDays_(m.week, 6), m.campaigns, m.cartCampaigns,
-      m.impressions, m.clicks, r2_(m.cost), r2_(m.conversions), r2_(m.value),
-      cartVal_(x, m.grossProfit), cartVal_(x, m.cogs), cartVal_(x, m.revenue),
-      cartVal_(x, m.orders), cartVal_(x, m.aov),
-      r2_(x.roas), r2_(x.poas), r2_(x.estPoas), r4_(x.margin), r4_(x.cartMargin),
-      r4_(x.coverage), r2_(x.gap), m.notes.join('; ')
+      m.week, m.campaigns, m.cartCampaigns,
+      r2_(m.cost), r2_(m.conversions), r2_(m.value), cartVal_(x, m.grossProfit),
+      r2_(x.roas), r2_(x.poas), r2_(x.estPoas), r4_(x.coverage),
+      m.notes.join('; ')
     ];
   });
 
