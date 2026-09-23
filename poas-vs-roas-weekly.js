@@ -32,6 +32,13 @@
  *             gross_profit_micros, cost_of_goods_sold_micros, revenue_micros,
  *             orders, average_order_value_micros
  *
+ * CHARTS: the Charts tab holds a small chronological data block (week, ROAS,
+ * reported POAS, estimated POAS, conversion value, conversions) and three
+ * embedded line charts built from it. Conversion value and conversions get a
+ * chart each rather than sharing one frame with two y-axes: a second axis can
+ * be scaled to make any two lines appear to agree, so it is never used here.
+ * Charts are removed and rebuilt each run — sheet.clear() leaves them behind.
+ *
  * WEEK BUCKETING: segments.week (server-side, Monday–Sunday) rather than
  * pulling segments.date and bucketing in-script. The date range is aligned
  * to a Monday start and a Sunday end in the account's timezone, so every
@@ -98,9 +105,10 @@ var CONFIG = {
 var TABS = {
   DETAIL: 'Weekly Detail',
   SUMMARY: 'Campaign Summary',
-  ACCOUNT: 'Account Weekly'
+  ACCOUNT: 'Account Weekly',
+  CHARTS: 'Charts'
 };
-var TAB_ORDER = [TABS.SUMMARY, TABS.DETAIL, TABS.ACCOUNT];
+var TAB_ORDER = [TABS.SUMMARY, TABS.CHARTS, TABS.DETAIL, TABS.ACCOUNT];
 
 var COLORS = {
   HEADER_BG: '#0D2952',
@@ -109,7 +117,13 @@ var COLORS = {
   SUBTITLE: '#666666',
   FLAG_BG: '#FCE8B2',   // rows with any Notes
   NOCART_BG: '#EFEFEF', // rows with conv. value but no cart data
-  BORDER: '#D9D9D9'
+  BORDER: '#D9D9D9',
+  // Chart series. Three hues that stay distinguishable under the common forms
+  // of colour blindness (checked as a set, not picked by eye).
+  SERIES_1: '#2A78D6',  // ROAS        (blue)
+  SERIES_2: '#EB6834',  // POAS repd.  (orange)
+  SERIES_3: '#1BAF7A',  // POAS est.   (aqua)
+  GRID: '#E6E6E6'
 };
 
 // Number-format tokens used per column. Two decimals on money and ratios.
@@ -183,6 +197,7 @@ function main() {
   safeTab_(ss, TABS.DETAIL, function() { writeDetailTab_(ss, campaigns, meta); });
   safeTab_(ss, TABS.SUMMARY, function() { writeSummaryTab_(ss, campaigns, meta); });
   safeTab_(ss, TABS.ACCOUNT, function() { writeAccountTab_(ss, accountWeeks, meta); });
+  safeTab_(ss, TABS.CHARTS, function() { writeChartsTab_(ss, accountWeeks, meta); });
   orderTabs_(ss);
 
   // ---- Optional email, only for flagged campaigns.
@@ -610,6 +625,128 @@ function writeAccountTab_(ss, accountWeeks, meta) {
   sh.getRange(at, 1).setFontWeight('bold').setFontColor(COLORS.TITLE);
   if (RUN_LOG.length) {
     sh.getRange(at + 1, 1, RUN_LOG.length, 1).setFontColor('#B00020');
+  }
+}
+
+function writeChartsTab_(ss, accountWeeks, meta) {
+  var sh = resetSheet_(ss, TABS.CHARTS);
+
+  // sh.clear() wipes values but leaves embedded charts behind, so a re-run
+  // would stack a second copy of every chart on top of the first.
+  var old = sh.getCharts();
+  for (var i = 0; i < old.length; i++) sh.removeChart(old[i]);
+
+  sh.getRange(1, 1).setValue(TABS.CHARTS + ' - ' + meta.account)
+      .setFontColor(COLORS.TITLE).setFontWeight('bold').setFontSize(12);
+  sh.getRange(2, 1).setValue(
+      meta.range.weeks.length + ' complete weeks ' + meta.range.start + ' to ' +
+      meta.range.end + ' | ' + meta.currency + ' | Google Ads API ' +
+      meta.apiVersion + ' | generated ' + meta.generated)
+      .setFontColor(COLORS.SUBTITLE).setFontSize(9);
+  sh.getRange(3, 1).setValue(
+      'Account totals per week, oldest first. Gaps in POAS (reported) are ' +
+      'weeks with no cart data - the line breaks rather than dropping to ' +
+      'zero. Revenue and conversions are drawn as two charts, not one with ' +
+      'two axes: a second axis can be scaled to make any two lines agree.')
+      .setFontColor(COLORS.SUBTITLE).setFontSize(9);
+
+  var headerRow = 5, dataRow = 6;
+  var cols = [
+    ['Week (Mon)', FMT.TEXT], ['ROAS', FMT.RATIO],
+    ['POAS (reported)', FMT.RATIO], ['POAS (est.)', FMT.RATIO],
+    ['Conv. value (' + meta.currency + ')', FMT.MONEY],
+    ['Conversions', FMT.RATIO]
+  ];
+  var rows = accountWeeks.map(function(m) {
+    var x = m.r;
+    return [m.week, r2_(x.roas), r2_(x.poas), r2_(x.estPoas), r2_(m.value),
+            r2_(m.conversions)];
+  });
+
+  sh.getRange(headerRow, 1, 1, cols.length)
+      .setValues([cols.map(function(c) { return c[0]; })])
+      .setBackground(COLORS.HEADER_BG).setFontColor(COLORS.HEADER_FG)
+      .setFontWeight('bold').setWrap(true);
+
+  if (!rows.length) {
+    sh.getRange(dataRow, 1).setValue('No data in range - no charts drawn.');
+    sh.setColumnWidths(1, cols.length, 110);
+    return;
+  }
+
+  var range = sh.getRange(dataRow, 1, rows.length, cols.length);
+  range.setValues(rows);
+  var fmtRow = cols.map(function(c) { return c[1]; });
+  var fmts = [];
+  for (var j = 0; j < rows.length; j++) fmts.push(fmtRow);
+  range.setNumberFormats(fmts);
+  range.setBorder(true, true, true, true, true, true, COLORS.BORDER,
+                  SpreadsheetApp.BorderStyle.SOLID);
+  sh.setColumnWidths(1, cols.length, 110);
+  sh.setFrozenRows(headerRow);
+
+  // Charts read the header row too, so the series pick up their names.
+  var lastRow = dataRow + rows.length - 1;
+  var weekCol = sh.getRange(headerRow, 1, rows.length + 1, 1);
+  var common = {
+    'backgroundColor': '#FFFFFF',
+    'chartArea': { left: 70, top: 48, width: '76%', height: '70%' },
+    'curveType': 'none',
+    'lineWidth': 2,
+    'pointSize': 5,
+    'hAxis': { slantedText: true, slantedTextAngle: 45,
+               textStyle: { fontSize: 9, color: COLORS.SUBTITLE } },
+    'vAxis': { gridlines: { color: COLORS.GRID },
+               textStyle: { fontSize: 9, color: COLORS.SUBTITLE } },
+    'titleTextStyle': { color: COLORS.TITLE, fontSize: 13, bold: true }
+  };
+
+  chart_(sh, [sh.getRange(headerRow, 1, rows.length + 1, 4)], 5, 8, common, {
+    'title': 'ROAS vs POAS by week',
+    'colors': [COLORS.SERIES_1, COLORS.SERIES_2, COLORS.SERIES_3],
+    'legend': { position: 'top', textStyle: { fontSize: 10 } },
+    'vAxis': { title: 'Return per $ spent', minValue: 0,
+               gridlines: { color: COLORS.GRID },
+               textStyle: { fontSize: 9, color: COLORS.SUBTITLE } }
+  });
+
+  chart_(sh, [weekCol, sh.getRange(headerRow, 5, rows.length + 1, 1)], 24, 8,
+      common, {
+    'title': 'Conversion value by week (' + meta.currency + ')',
+    'colors': [COLORS.SERIES_1],
+    'legend': { position: 'none' },
+    'vAxis': { title: meta.currency, minValue: 0,
+               gridlines: { color: COLORS.GRID },
+               textStyle: { fontSize: 9, color: COLORS.SUBTITLE } }
+  });
+
+  chart_(sh, [weekCol, sh.getRange(headerRow, 6, rows.length + 1, 1)], 43, 8,
+      common, {
+    'title': 'Conversions by week',
+    'colors': [COLORS.SERIES_3],
+    'legend': { position: 'none' },
+    'vAxis': { title: 'Conversions', minValue: 0,
+               gridlines: { color: COLORS.GRID },
+               textStyle: { fontSize: 9, color: COLORS.SUBTITLE } }
+  });
+
+  Logger.log('Charts tab written (' + rows.length + ' weeks, last row ' +
+             lastRow + ').');
+}
+
+// One line chart from one or more ranges. Each chart is built and inserted on
+// its own so a single bad option cannot cost the whole tab.
+function chart_(sh, ranges, row, col, common, options) {
+  try {
+    var b = sh.newChart().asLineChart();
+    for (var i = 0; i < ranges.length; i++) b.addRange(ranges[i]);
+    var k;
+    for (k in common) if (!(k in options)) b.setOption(k, common[k]);
+    for (k in options) b.setOption(k, options[k]);
+    b.setPosition(row, col, 0, 0);
+    sh.insertChart(b.build());
+  } catch (e) {
+    logProblem_('Chart "' + (options.title || '?') + '" failed: ' + e);
   }
 }
 
