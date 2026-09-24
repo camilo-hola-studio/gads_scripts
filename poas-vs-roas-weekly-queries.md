@@ -50,10 +50,12 @@ Notes:
   back as 0 — the script treats "conv. value > 0 with all cart metrics 0" as
   "no cart data" rather than as zero profit.
 
-## 2. Sanity check: does this account return cart data at all?
+## 2. Sanity check: does this account return revenue and COGS?
 
-Run this first. If every row shows 0 for revenue/orders/gross profit, cart
-data is not reaching Google Ads and the script will show estimated POAS only.
+Run this first. POAS is `(revenue - COGS) / cost`, so both figures have to
+come back non-zero. If `revenue_micros` is 0 everywhere, purchases are not
+reporting cart data and POAS will be blank on every row. Conversion value
+will always exceed revenue: the difference is tax and shipping.
 
 ```sql
 SELECT
