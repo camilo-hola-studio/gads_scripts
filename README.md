@@ -57,6 +57,51 @@ Setup: paste the file into a new script, authorise, optionally set
 URL logged), run. Deployable unchanged across ROAS-target and CPA-target
 accounts.
 
+### `shopping-product-labels.js`
+
+Item-level Shopping performance sorted into five buckets for feed
+segmentation: `over-index`, `index`, `near-index`, `under-index`, `no-index`.
+Reads `shopping_performance_view` segmented by `segments.product_item_id`,
+aggregates per item, and compares each item's ROAS against the account's
+**breakeven ROAS (1 / gross margin, not a ROAS target)**, gated on having
+enough clicks for the ROAS to mean anything. Writes three tabs — **Bucket
+Summary** (items, spend and value per bucket, with share-of-cost, plus the run
+log), **Labels** (item ID and bucket, headed for a Merchant Center
+supplemental feed) and **Item Detail** (every item, biggest spender first).
+
+Read-only, like the rest: nothing is written to the account or to Merchant
+Center. Uploading the supplemental feed is a manual step.
+
+Differences from the widely-circulated version of this idea, all deliberate:
+bands are relative to breakeven rather than a flat ±1; the impression floor is
+tested first so a handful of impressions with one lucky sale cannot buy a
+performance label; recent days are excluded for conversion lag; values are
+parsed as numbers (a single-comma strip turns anything over 1,000,000 into
+`NaN`); and zero-cost items are handled explicitly, since `value / 0` is
+`Infinity`, not `NaN`. Each run also checks the bucket spread and warns if
+more than 90% of spend lands in one bucket, which almost always means
+`BREAKEVEN_ROAS` is wrong.
+
+Seeding a new market: a market with no history cannot label itself. Point
+`SOURCE_CAMPAIGN_INCLUDE` at the market that has data, use its labels to
+structure the new market's launch, then switch the filter once the new market
+has traffic of its own.
+
+Setup:
+
+1. Create a blank Google Sheet and copy its URL.
+2. In Google Ads open **Tools > Bulk actions > Scripts**, click **+**, name
+   the script and paste in `shopping-product-labels.js`.
+3. In the `CONFIG` block set `SPREADSHEET_URL`.
+4. Set `BREAKEVEN_ROAS` to 1 / gross margin (50% margin → 2.0) and
+   `AVERAGE_CVR_PCT` to the account's actual Shopping conversion rate.
+5. To label from one market only, set `SOURCE_CAMPAIGN_INCLUDE` to a
+   case-insensitive regex matching those campaign names.
+6. Set `LAG_DAYS` to roughly the account's conversion lag.
+7. Click **Authorise**, then **Preview** to check the logs, then **Run**.
+8. Read **Bucket Summary** before acting on anything: if one bucket holds
+   almost all the spend, the breakeven is wrong.
+
 ### `poas-vs-roas-weekly.js`
 
 Weekly campaign profitability for e-commerce accounts reporting
