@@ -113,8 +113,16 @@ var CONFIG = {
   // Which campaigns' performance decides the labels. Case-insensitive
   // regular expressions; plain text works too. Empty include = whole
   // account. Exclude wins.
-  //   one account, two markets:  SOURCE_CAMPAIGN_INCLUDE: ['\\bAU\\b']
-  //   separate accounts:         leave both empty, run in each account
+  //
+  // For a market token, use the boundary form below rather than '\\bUK\\b'
+  // or a bare 'UK'. \\b does not create a boundary next to an underscore,
+  // so '\\bUK\\b' misses "UK_Shopping_Launch"; a bare 'UK' matches
+  // "UKRAINE" and "Bukowski".
+  //   one account, market token:  ['(^|[^A-Za-z0-9])UK([^A-Za-z0-9]|$)']
+  //   separate accounts:          leave both empty, run in each account
+  //
+  // Every run logs the campaigns it included and excluded. Read that list
+  // the first time you set this.
   SOURCE_CAMPAIGN_INCLUDE: [],
   SOURCE_CAMPAIGN_EXCLUDE: [],
 
@@ -200,6 +208,23 @@ function main() {
   Logger.log(data.itemCount + ' items from ' + data.rowCount + ' rows' +
              (data.filteredRows ? ' (' + data.filteredRows +
               ' rows skipped by the campaign filter)' : ''));
+
+  // Which campaigns actually fed the labels. Worth reading every run: it is
+  // how you catch a filter that matched nothing, matched the wrong market, or
+  // silently left out the campaigns carrying most of the spend.
+  Logger.log('Campaigns INCLUDED (' + data.matched.length + '):' +
+             (data.matched.length ? '\n  ' + data.matched.join('\n  ')
+                                  : ' none'));
+  if (data.skipped.length) {
+    Logger.log('Campaigns EXCLUDED by the filter (' + data.skipped.length +
+               '):\n  ' + data.skipped.join('\n  '));
+  }
+  if (!data.matched.length) {
+    logProblem_('The campaign filter matched no campaigns. Check ' +
+                'SOURCE_CAMPAIGN_INCLUDE against the excluded names above — ' +
+                'note that \\b does not create a boundary next to an ' +
+                'underscore, so "UK_Shopping" needs a different pattern.');
+  }
 
   var items = [];
   Object.keys(data.items).forEach(function(id) {
@@ -310,6 +335,7 @@ function fetchItems_(query) {
   var rows = run.rows;
   var items = {};
   var rowCount = 0, filteredRows = 0, itemCount = 0;
+  var matched = {}, skipped = {};
   var include = compile_(CONFIG.SOURCE_CAMPAIGN_INCLUDE);
   var exclude = compile_(CONFIG.SOURCE_CAMPAIGN_EXCLUDE);
 
@@ -324,7 +350,12 @@ function fetchItems_(query) {
     rowCount++;
     try {
       var campaign = row['campaign.name'] || '';
-      if (!nameMatches_(campaign, include, exclude)) { filteredRows++; continue; }
+      if (!nameMatches_(campaign, include, exclude)) {
+        filteredRows++;
+        skipped[campaign] = true;
+        continue;
+      }
+      matched[campaign] = true;
 
       // The API lower-cases item IDs. Key on that and keep it consistent all
       // the way to the feed, or the join drops rows.
@@ -348,7 +379,9 @@ function fetchItems_(query) {
     }
   }
   return { items: items, rowCount: rowCount, itemCount: itemCount,
-           filteredRows: filteredRows, apiVersion: run.apiVersion };
+           filteredRows: filteredRows, apiVersion: run.apiVersion,
+           matched: Object.keys(matched).sort(),
+           skipped: Object.keys(skipped).sort() };
 }
 
 // ---------------------------------------------------------------------------
