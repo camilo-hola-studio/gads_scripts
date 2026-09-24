@@ -59,26 +59,33 @@ accounts.
 
 ### `poas-vs-roas-weekly.js`
 
-Weekly campaign profitability for e-commerce accounts with
-[conversions with cart data](https://support.google.com/google-ads/answer/9028254):
-POAS (gross profit / cost) next to ROAS (conv. value / cost), one row per
-campaign per complete Mon–Sun week, so campaigns that look fine on ROAS but
-are thin on profit stand out. Targets Google Ads API v25 via `segments.week`
-on the `campaign` resource. Writes four tabs — **Campaign Summary** (latest
-week vs prior week vs N-week average for ROAS, POAS and margin), **Weekly
-Detail** (every campaign-week: cost, conv. value, gross profit, ROAS, reported
-POAS, estimated POAS and profit coverage — the monitoring view, kept
-deliberately narrow), **Account
-Weekly** (account totals per week plus the run log) and **Charts** (three
-embedded line charts: ROAS vs reported vs estimated POAS by week, then
-conversion value and conversions as one chart each rather than one chart with
-two y-axes). Rows with conversion
-value but no cart data print a blank reported POAS and a separate estimated
-POAS from a configurable fallback margin. Notes flag POAS below threshold,
-margin moving more than 5 pts week on week, and profit coverage under 50%.
-Optional email of flagged campaigns only, off by default. The GAQL is in
-[`poas-vs-roas-weekly-queries.md`](poas-vs-roas-weekly-queries.md) for
-testing in the query builder first.
+Weekly campaign profitability for e-commerce accounts reporting
+[conversions with cart data](https://support.google.com/google-ads/answer/9028254).
+
+```
+POAS = (metrics.revenue_micros - metrics.cost_of_goods_sold_micros) / cost
+ROAS =  metrics.conversions_value / cost
+```
+
+Both are campaign-level figures from a single report query on the `campaign`
+resource (Google Ads API v25, bucketed with `segments.week`); nothing
+item-level is read. Conversion value is not used as the POAS numerator
+because it includes tax and shipping, which are neither profit nor cost of
+goods — that is why conversion value runs ahead of revenue on every row.
+There is no assumed margin anywhere in the script: a week with no revenue
+prints a blank POAS and is noted, never a zero.
+
+Four tabs — **Campaign Summary** (latest week vs prior week vs N-week average
+for ROAS, POAS and margin), **Charts** (ROAS vs POAS by week, then conversion
+value and conversions as one chart each rather than one chart with two
+y-axes), **Weekly Detail** (every campaign-week: cost, conv. value, revenue,
+COGS, gross profit, ROAS, POAS, margin) and **Account Weekly** (account totals
+per week plus the run log). Notes flag POAS below a configurable threshold and
+product margin moving more than 5 points week on week. Optional email of
+flagged campaigns only, off by default. Each run also cross-checks computed
+profit against the gross profit Google reports and logs any disagreement. The
+GAQL is in [`poas-vs-roas-weekly-queries.md`](poas-vs-roas-weekly-queries.md)
+for testing in the query builder first.
 
 Setup:
 
@@ -86,8 +93,8 @@ Setup:
 2. In Google Ads open **Tools > Bulk actions > Scripts**, click **+**, name
    the script and paste in `poas-vs-roas-weekly.js`.
 3. In the `CONFIG` block set `SPREADSHEET_URL` to the sheet URL.
-4. Optionally adjust `WEEKS` (13), `FALLBACK_MARGIN` (0.58),
-   `POAS_THRESHOLD` (3.0), `CAMPAIGN_INCLUDE` / `CAMPAIGN_EXCLUDE`
+4. Optionally adjust `WEEKS` (13), `POAS_THRESHOLD` (3.0),
+   `MARGIN_MOVE_PTS` (5), `CAMPAIGN_INCLUDE` / `CAMPAIGN_EXCLUDE`
    (case-insensitive regex, empty include = all campaigns).
 5. For email, set `EMAIL_ENABLED: true` and fill `EMAIL_RECIPIENTS`.
 6. Click **Authorise** and accept the Google Ads and Sheets/Gmail prompts.

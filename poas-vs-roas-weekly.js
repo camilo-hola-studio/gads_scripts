@@ -12,14 +12,25 @@
  * campaign, per complete week, so campaigns that look fine on ROAS but are
  * thin on profit stand out.
  *
- * WHERE THE PROFIT NUMBERS COME FROM: "conversions with cart data". When cart
- * data is reported for a purchase conversion and the Merchant Center feed
- * carries cost_of_goods_sold, Google Ads exposes revenue, gross profit, COGS,
- * orders and average order value as campaign-level metrics. Not every
- * campaign carries cart data, so every row also states how much of its
- * conversion value has cart data behind it ("profit coverage"), and rows
- * with conversion value but no gross profit print a BLANK reported POAS
- * plus a clearly separate estimated POAS built from CONFIG.FALLBACK_MARGIN.
+ * HOW POAS IS CALCULATED:
+ *
+ *   POAS = (metrics.revenue_micros - metrics.cost_of_goods_sold_micros) / cost
+ *   ROAS =  metrics.conversions_value / cost
+ *
+ * Both are campaign-level figures from one report query; nothing item-level
+ * is read. Revenue and COGS come from "conversions with cart data" - the
+ * Merchant Center feed carries cost_of_goods_sold on every item in this
+ * account, so every week with revenue has real profit behind it.
+ *
+ * Conversion value is deliberately NOT the POAS denominator's partner: it
+ * includes tax and shipping, which are neither profit nor cost of goods.
+ * That is why conversion value runs ahead of revenue on every row, and why
+ * dividing profit by conversion value would report a margin lower than the
+ * real one by whatever the tax and shipping share happened to be.
+ *
+ * A week that returns no revenue prints a BLANK POAS, never a zero, and is
+ * noted. There is no estimated POAS and no assumed margin anywhere in this
+ * script: every number on the sheet is reported by Google Ads.
  *
  * API: targets Google Ads API v25 (current major version at time of
  * writing, released 22 Jul 2026) via the apiVersion option on
@@ -29,12 +40,14 @@
  *   resource  campaign
  *   segments  segments.week (Mon–Sun, keyed by the Monday date), segments.date
  *   metrics   impressions, clicks, cost_micros, conversions, conversions_value,
- *             gross_profit_micros, cost_of_goods_sold_micros, revenue_micros,
+ *             revenue_micros, cost_of_goods_sold_micros, gross_profit_micros,
  *             orders, average_order_value_micros
  *
  * CHARTS: the Charts tab holds a small chronological data block (week, ROAS,
- * reported POAS, estimated POAS, conversion value, conversions) and three
- * embedded line charts built from it. Conversion value and conversions get a
+ * POAS, conversion value, conversions) and three embedded line charts
+ * anchored underneath it. SpreadsheetApp.flush() runs before they are built,
+ * because a chart is drawn against the grid as the server holds it and the
+ * values above are still buffered at that point. Conversion value and conversions get a
  * chart each rather than sharing one frame with two y-axes: a second axis can
  * be scaled to make any two lines appear to agree, so it is never used here.
  * Charts are removed and rebuilt each run — sheet.clear() leaves them behind.
@@ -72,19 +85,12 @@ var CONFIG = {
   // current partial week is never included.
   WEEKS: 13,
 
-  // Gross margin assumed for conversion value that has NO cart data behind
-  // it. Only used for the "Est. POAS" column, never for reported POAS.
-  FALLBACK_MARGIN: 0.58,
-
   // Flag a campaign-week when its POAS is below this.
   POAS_THRESHOLD: 3.0,
 
-  // Flag when margin moves more than this many percentage points vs the
-  // previous week (both weeks need reported cart data).
+  // Flag when product margin moves more than this many percentage points vs
+  // the previous week.
   MARGIN_MOVE_PTS: 5,
-
-  // Flag when less than this share of conversion value has cart data.
-  COVERAGE_THRESHOLD: 0.5,
 
   // Campaign name filters. Case-insensitive regular expressions (plain text
   // works too). Empty include list = every campaign. Exclude wins.
@@ -185,6 +191,7 @@ function main() {
   campaigns.sort(function(a, b) { return b.totals.cost - a.totals.cost; });
 
   var accountWeeks = buildAccountWeeks_(campaigns, range.weeks);
+  checkProfitAgreement_(campaigns);
 
   // ---- Write. Each tab is independent: a failure on one is logged and the
   // others still get written.
@@ -366,58 +373,43 @@ function emptyMetrics_(week) {
   return m;
 }
 
-// Cart data is "present" when any cart-only metric is non-zero.
-function hasCartData_(m) {
-  return m.revenue > 0 || m.orders > 0 || m.grossProfit !== 0 || m.cogs > 0;
+// Profit data is present when the week returned product revenue. Every item
+// in this account's feed carries COGS, so a week with revenue has profit.
+function hasProfitData_(m) {
+  return m.revenue > 0;
 }
 
 // Ratios for one metrics bucket. null = not computable, rendered blank.
+//
+// POAS is built from the two figures the feed actually carries: product
+// revenue and COGS. Conversion value is deliberately not part of it - it
+// includes tax and shipping, which are neither profit nor cost of goods, so
+// dividing profit by it would understate margin by whatever the shipping
+// and tax share happens to be that week.
 function ratios_(m) {
   var out = {};
-  var cart = hasCartData_(m);
-  out.hasCart = cart;
+  var hasProfit = hasProfitData_(m);
+  out.hasProfit = hasProfit;
+  out.profit = hasProfit ? m.revenue - m.cogs : null;
+
   out.roas = m.cost > 0 ? m.value / m.cost : null;
+  out.poas = (hasProfit && m.cost > 0) ? out.profit / m.cost : null;
 
-  // Reported POAS: blank when there is conversion value but no cart data
-  // (never 0 — that would read as "unprofitable"). A genuine zero (spend,
-  // no conversions at all) is still 0.
-  if (cart) {
-    out.poas = m.cost > 0 ? m.grossProfit / m.cost : null;
-    out.margin = m.value > 0 ? m.grossProfit / m.value : null;
-    // Margin on the orders that actually carry cart data - the true product
-    // margin, and the number to calibrate CONFIG.FALLBACK_MARGIN against.
-    out.cartMargin = m.revenue > 0 ? m.grossProfit / m.revenue : null;
-  } else {
-    out.poas = (m.value > 0 || m.cost === 0) ? null : 0;
-    out.margin = null;
-    out.cartMargin = null;
-  }
+  // Product margin: profit over the revenue it came from, not over
+  // conversion value. This is the number that moves when pricing, discounting
+  // or product mix changes.
+  out.margin = hasProfit ? out.profit / m.revenue : null;
 
-  // Share of conversion value that has cart data behind it. Cart revenue can
-  // exceed conversion value (different attribution/de-duplication paths),
-  // so cap at 100%.
-  out.coverage = m.value > 0 ? Math.min(1, m.revenue / m.value) : null;
-
-  // Estimated POAS: reported gross profit for the covered part of
-  // conversion value, plus FALLBACK_MARGIN on the uncovered remainder.
-  // For a row with no cart data at all this is value * margin / cost.
-  if (m.cost > 0) {
-    var uncovered = Math.max(0, m.value - (cart ? m.revenue : 0));
-    out.estPoas = ((cart ? m.grossProfit : 0) + uncovered * CONFIG.FALLBACK_MARGIN) / m.cost;
-  } else {
-    out.estPoas = null;
-  }
-
-  out.gap = (out.roas !== null && out.poas !== null) ? out.roas - out.poas : null;
+  // Product revenue as a share of conversion value. The remainder is tax and
+  // shipping, so this is reported for context and never flagged.
+  out.netShare = m.value > 0 ? m.revenue / m.value : null;
   return out;
 }
 
 function deriveCampaign_(c, weeks) {
   c.rows = [];
   c.totals = emptyMetrics_('');
-  c.cartTotals = emptyMetrics_(''); // sums over weeks WITH cart data only
-  c.cartWeeks = 0;
-  c.valueWeeks = 0;
+  c.profitWeeks = 0;
 
   var prev = null;
   weeks.forEach(function(w) {
@@ -428,8 +420,7 @@ function deriveCampaign_(c, weeks) {
     m.notes = rowNotes_(m, x, prev);
     c.rows.push(m);
     addInto_(c.totals, m);
-    if (x.hasCart) { addInto_(c.cartTotals, m); c.cartWeeks++; }
-    if (m.value > 0) c.valueWeeks++;
+    if (x.hasProfit) c.profitWeeks++;
     prev = m;
   });
 
@@ -439,16 +430,11 @@ function deriveCampaign_(c, weeks) {
 
 function rowNotes_(m, x, prev) {
   var notes = [];
-  if (m.value > 0 && !x.hasCart) {
-    notes.push('No cart data - POAS estimated at ' +
-               Math.round(CONFIG.FALLBACK_MARGIN * 100) + '% margin');
+  if (m.value > 0 && !x.hasProfit) {
+    notes.push('No profit data returned this week - POAS blank');
   }
-  if (x.poas !== null) {
-    if (x.poas < CONFIG.POAS_THRESHOLD) {
-      notes.push('POAS ' + fix2_(x.poas) + ' below ' + fix2_(CONFIG.POAS_THRESHOLD));
-    }
-  } else if (x.estPoas !== null && m.value > 0 && x.estPoas < CONFIG.POAS_THRESHOLD) {
-    notes.push('Est. POAS ' + fix2_(x.estPoas) + ' below ' + fix2_(CONFIG.POAS_THRESHOLD));
+  if (x.poas !== null && x.poas < CONFIG.POAS_THRESHOLD) {
+    notes.push('POAS ' + fix2_(x.poas) + ' below ' + fix2_(CONFIG.POAS_THRESHOLD));
   }
   if (x.margin !== null && prev && prev.r && prev.r.margin !== null) {
     var movePts = (x.margin - prev.r.margin) * 100;
@@ -457,11 +443,37 @@ function rowNotes_(m, x, prev) {
                  ' pts WoW');
     }
   }
-  if (x.hasCart && x.coverage !== null && x.coverage < CONFIG.COVERAGE_THRESHOLD) {
-    notes.push('Profit coverage ' + Math.round(x.coverage * 100) + '% below ' +
-               Math.round(CONFIG.COVERAGE_THRESHOLD * 100) + '%');
-  }
   return notes;
+}
+
+// POAS is computed as revenue - COGS. Google also reports gross profit
+// directly, so the two should agree; if they do not, the feed is reporting
+// something this script's arithmetic does not capture and the run log says so
+// rather than letting the difference pass unnoticed.
+function checkProfitAgreement_(campaigns) {
+  var revenue = 0, cogs = 0, reported = 0;
+  campaigns.forEach(function(c) {
+    revenue += c.totals.revenue;
+    cogs += c.totals.cogs;
+    reported += c.totals.grossProfit;
+  });
+  if (revenue <= 0) {
+    logProblem_('No product revenue in the whole period - POAS will be blank ' +
+                'everywhere. Check that purchases are reporting cart data.');
+    return;
+  }
+  var computed = revenue - cogs;
+  var diff = Math.abs(computed - reported);
+  if (diff > Math.max(1, revenue * 0.005)) {
+    logProblem_('Computed profit (revenue - COGS = ' + fix2_(computed) +
+                ') differs from the gross profit Google reports (' +
+                fix2_(reported) + ') by ' + fix2_(diff) + ' over the period. ' +
+                'POAS uses the computed figure.');
+  } else {
+    Logger.log('Profit check: revenue - COGS = ' + fix2_(computed) +
+               ', Google-reported gross profit = ' + fix2_(reported) +
+               ' (agree within tolerance).');
+  }
 }
 
 function buildAccountWeeks_(campaigns, weeks) {
@@ -475,10 +487,10 @@ function buildAccountWeeks_(campaigns, weeks) {
       if (!cm) return;
       addInto_(m, cm);
       nCamp++;
-      if (cm.r.hasCart) nCart++;
+      if (cm.r.hasProfit) nCart++;
     });
     m.campaigns = nCamp;
-    m.cartCampaigns = nCart;
+    m.profitCampaigns = nCart;
     m.r = ratios_(m);
     m.notes = nCamp ? rowNotes_(m, m.r, prev) : [];
     out.push(m);
@@ -492,16 +504,15 @@ function buildAccountWeeks_(campaigns, weeks) {
 // ---------------------------------------------------------------------------
 function writeDetailTab_(ss, campaigns, meta) {
   var cur = meta.currency;
-  // Monitoring view: the two ratios, the three numbers behind them, and the
-  // coverage that says whether reported POAS can be trusted. Everything else
-  // the query returns is in Campaign Summary.
+  // Revenue and COGS are shown because POAS is computed from them: the
+  // number on the sheet can be checked by hand.
   var cols = [
     ['Week (Mon)', FMT.TEXT], ['Campaign', FMT.TEXT], ['Type', FMT.TEXT],
     ['Cost (' + cur + ')', FMT.MONEY], ['Conv. value (' + cur + ')', FMT.MONEY],
+    ['Revenue (' + cur + ')', FMT.MONEY], ['COGS (' + cur + ')', FMT.MONEY],
     ['Gross profit (' + cur + ')', FMT.MONEY],
-    ['ROAS', FMT.RATIO], ['POAS (reported)', FMT.RATIO], ['POAS (est.)', FMT.RATIO],
-    ['Profit coverage', FMT.PCT],
-    ['Cart data', FMT.TEXT], ['Notes', FMT.TEXT]
+    ['ROAS', FMT.RATIO], ['POAS', FMT.RATIO], ['Margin', FMT.PCT],
+    ['Notes', FMT.TEXT]
   ];
   var rows = [];
   campaigns.forEach(function(c) {
@@ -509,9 +520,9 @@ function writeDetailTab_(ss, campaigns, meta) {
       var x = m.r;
       rows.push([
         m.week, c.name, c.type,
-        r2_(m.cost), r2_(m.value), cartVal_(x, m.grossProfit),
-        r2_(x.roas), r2_(x.poas), r2_(x.estPoas), r4_(x.coverage),
-        x.hasCart ? 'Yes' : (m.value > 0 ? 'No' : ''),
+        r2_(m.cost), r2_(m.value),
+        profitVal_(x, m.revenue), profitVal_(x, m.cogs), profitVal_(x, x.profit),
+        r2_(x.roas), r2_(x.poas), r4_(x.margin),
         m.notes.join('; ')
       ]);
     });
@@ -520,13 +531,11 @@ function writeDetailTab_(ss, campaigns, meta) {
   rows.sort(function(a, b) { return a[0] < b[0] ? 1 : a[0] > b[0] ? -1 : 0; });
 
   writeTable_(ss, TABS.DETAIL, meta,
-      'One row per campaign per complete week. POAS = gross profit / cost, ' +
-      'ROAS = conv. value / cost. POAS (reported) is blank where conversion ' +
-      'value has no gross profit behind it; POAS (est.) applies ' +
-      Math.round(CONFIG.FALLBACK_MARGIN * 100) + '% margin to the uncovered ' +
-      'share. Read reported POAS against profit coverage: at 40% coverage a ' +
-      'low POAS is missing data, not a thin campaign.',
-      cols, rows, { notesCol: cols.length, cartCol: cols.length - 1 });
+      'One row per campaign per complete week. POAS = (revenue - COGS) / ' +
+      'cost. ROAS = conv. value / cost. Margin = (revenue - COGS) / revenue. ' +
+      'Conversion value runs ahead of revenue by whatever tax and shipping ' +
+      'that week carried, which is why POAS is built from revenue instead.',
+      cols, rows, { notesCol: cols.length });
 }
 
 function writeSummaryTab_(ss, campaigns, meta) {
@@ -538,75 +547,67 @@ function writeSummaryTab_(ss, campaigns, meta) {
 
   var cols = [
     ['Campaign', FMT.TEXT], ['Type', FMT.TEXT], ['Status', FMT.TEXT],
-    ['Weeks with data', FMT.INT], ['Weeks with cart data', FMT.INT],
-    ['Cost latest wk (' + cur + ')', FMT.MONEY], ['Cost ' + avgLabel + ' (' + cur + ')', FMT.MONEY],
+    ['Weeks with data', FMT.INT],
+    ['Cost latest wk (' + cur + ')', FMT.MONEY],
+    ['Cost ' + avgLabel + ' (' + cur + ')', FMT.MONEY],
     ['ROAS latest', FMT.RATIO], ['ROAS prior', FMT.RATIO], ['ROAS ' + avgLabel, FMT.RATIO],
     ['POAS latest', FMT.RATIO], ['POAS prior', FMT.RATIO], ['POAS ' + avgLabel, FMT.RATIO],
-    ['Est. POAS latest', FMT.RATIO],
     ['Margin latest', FMT.PCT], ['Margin prior', FMT.PCT], ['Margin ' + avgLabel, FMT.PCT],
-    ['Cart margin latest', FMT.PCT], ['Cart margin ' + avgLabel, FMT.PCT],
-    ['Profit coverage ' + avgLabel, FMT.PCT],
-    ['Cart data', FMT.TEXT], ['Notes (latest week)', FMT.TEXT]
+    ['Notes (latest week)', FMT.TEXT]
   ];
 
   var rows = [];
   campaigns.forEach(function(c) {
     var L = c.byWeek[latest] ? c.byWeek[latest].r : null;
     var P = prior && c.byWeek[prior] ? c.byWeek[prior].r : null;
+    // Period figures are ratio-of-sums, not an average of weekly ratios, so a
+    // heavy week counts for what it spent.
     var T = ratios_(c.totals);
-    // Period POAS / margin come from weeks that actually carry cart data, so
-    // a campaign with patchy cart data is not dragged toward zero.
-    var CT = c.cartWeeks ? ratios_(c.cartTotals) : null;
-    var cartLabel = c.cartWeeks === 0 ? (c.valueWeeks ? 'None' : '') :
-                    (c.cartWeeks < c.valueWeeks ? 'Partial' : 'All weeks');
     var notes = c.byWeek[latest] ? c.byWeek[latest].notes.slice() : ['No data latest week'];
     rows.push([
-      c.name, c.type, c.status, c.rows.length, c.cartWeeks,
+      c.name, c.type, c.status, c.rows.length,
       c.byWeek[latest] ? r2_(c.byWeek[latest].cost) : '',
       r2_(c.totals.cost / weeks.length),
       L ? r2_(L.roas) : '', P ? r2_(P.roas) : '', r2_(T.roas),
-      L ? r2_(L.poas) : '', P ? r2_(P.poas) : '', CT ? r2_(CT.poas) : '',
-      L ? r2_(L.estPoas) : '',
-      L ? r4_(L.margin) : '', P ? r4_(P.margin) : '', CT ? r4_(CT.margin) : '',
-      L ? r4_(L.cartMargin) : '', CT ? r4_(CT.cartMargin) : '',
-      r4_(T.coverage),
-      cartLabel, notes.join('; ')
+      L ? r2_(L.poas) : '', P ? r2_(P.poas) : '', r2_(T.poas),
+      L ? r4_(L.margin) : '', P ? r4_(P.margin) : '', r4_(T.margin),
+      notes.join('; ')
     ]);
   });
 
   writeTable_(ss, TABS.SUMMARY, meta,
       'Latest week ' + latest + (prior ? ', prior week ' + prior : '') +
-      '. Period ROAS is sum(value)/sum(cost) over all weeks; period POAS and ' +
-      'margins use only the weeks that carry cart data. Cart margin = gross ' +
-      'profit / cart revenue (use it to calibrate FALLBACK_MARGIN).',
-      cols, rows, { notesCol: cols.length, cartCol: cols.length - 1 });
+      '. POAS = (revenue - COGS) / cost; ROAS = conv. value / cost. Period ' +
+      'figures are sum over sum across the ' + weeks.length + ' weeks, not an ' +
+      'average of weekly ratios.',
+      cols, rows, { notesCol: cols.length });
 }
 
 function writeAccountTab_(ss, accountWeeks, meta) {
   var cur = meta.currency;
   var cols = [
-    ['Week (Mon)', FMT.TEXT],
-    ['Campaigns', FMT.INT], ['Campaigns with cart data', FMT.INT],
+    ['Week (Mon)', FMT.TEXT], ['Campaigns', FMT.INT],
     ['Cost (' + cur + ')', FMT.MONEY], ['Conversions', FMT.RATIO],
     ['Conv. value (' + cur + ')', FMT.MONEY],
+    ['Revenue (' + cur + ')', FMT.MONEY], ['COGS (' + cur + ')', FMT.MONEY],
     ['Gross profit (' + cur + ')', FMT.MONEY],
-    ['ROAS', FMT.RATIO], ['POAS (reported)', FMT.RATIO], ['POAS (est.)', FMT.RATIO],
-    ['Profit coverage', FMT.PCT],
+    ['ROAS', FMT.RATIO], ['POAS', FMT.RATIO], ['Margin', FMT.PCT],
     ['Notes', FMT.TEXT]
   ];
   var rows = accountWeeks.slice().reverse().map(function(m) {
     var x = m.r;
     return [
-      m.week, m.campaigns, m.cartCampaigns,
-      r2_(m.cost), r2_(m.conversions), r2_(m.value), cartVal_(x, m.grossProfit),
-      r2_(x.roas), r2_(x.poas), r2_(x.estPoas), r4_(x.coverage),
+      m.week, m.campaigns,
+      r2_(m.cost), r2_(m.conversions), r2_(m.value),
+      profitVal_(x, m.revenue), profitVal_(x, m.cogs), profitVal_(x, x.profit),
+      r2_(x.roas), r2_(x.poas), r4_(x.margin),
       m.notes.join('; ')
     ];
   });
 
   var sh = writeTable_(ss, TABS.ACCOUNT, meta,
       'Account totals per complete week (filtered campaigns only). ' +
-      'Reported POAS here understates true profit when coverage is low.',
+      'POAS = (revenue - COGS) / cost.',
       cols, rows, { notesCol: cols.length });
 
   // Run log under the table so problems are visible without opening Logger.
@@ -637,23 +638,21 @@ function writeChartsTab_(ss, accountWeeks, meta) {
       meta.apiVersion + ' | generated ' + meta.generated)
       .setFontColor(COLORS.SUBTITLE).setFontSize(9);
   sh.getRange(3, 1).setValue(
-      'Account totals per week, oldest first. Gaps in POAS (reported) are ' +
-      'weeks with no cart data - the line breaks rather than dropping to ' +
-      'zero. Revenue and conversions are drawn as two charts, not one with ' +
-      'two axes: a second axis can be scaled to make any two lines agree.')
+      'Account totals per week, oldest first. The charts are below this ' +
+      'table. Conversion value and conversions get a chart each rather than ' +
+      'one chart with two y-axes: a second axis can be scaled to make any ' +
+      'two lines appear to agree.')
       .setFontColor(COLORS.SUBTITLE).setFontSize(9);
 
   var headerRow = 5, dataRow = 6;
   var cols = [
-    ['Week (Mon)', FMT.TEXT], ['ROAS', FMT.RATIO],
-    ['POAS (reported)', FMT.RATIO], ['POAS (est.)', FMT.RATIO],
+    ['Week (Mon)', FMT.TEXT], ['ROAS', FMT.RATIO], ['POAS', FMT.RATIO],
     ['Conv. value (' + meta.currency + ')', FMT.MONEY],
     ['Conversions', FMT.RATIO]
   ];
   var rows = accountWeeks.map(function(m) {
     var x = m.r;
-    return [m.week, r2_(x.roas), r2_(x.poas), r2_(x.estPoas), r2_(m.value),
-            r2_(m.conversions)];
+    return [m.week, r2_(x.roas), r2_(x.poas), r2_(m.value), r2_(m.conversions)];
   });
 
   sh.getRange(headerRow, 1, 1, cols.length)
@@ -675,67 +674,66 @@ function writeChartsTab_(ss, accountWeeks, meta) {
   range.setNumberFormats(fmts);
   range.setBorder(true, true, true, true, true, true, COLORS.BORDER,
                   SpreadsheetApp.BorderStyle.SOLID);
-  sh.setColumnWidths(1, cols.length, 110);
+  sh.setColumnWidths(1, cols.length, 120);
   sh.setFrozenRows(headerRow);
 
-  // Charts read the header row too, so the series pick up their names.
+  // A chart is built against the grid as the server currently holds it. The
+  // values above are still buffered at this point, so without a flush the
+  // chart can be built over an empty range and render as nothing.
+  try {
+    SpreadsheetApp.flush();
+  } catch (e) {
+    logProblem_('flush before charts failed: ' + e);
+  }
+
+  // Charts are anchored under the data block, one below the other, rather
+  // than off to the right where they are easy to miss.
   var lastRow = dataRow + rows.length - 1;
   var weekCol = sh.getRange(headerRow, 1, rows.length + 1, 1);
-  var common = {
-    'backgroundColor': '#FFFFFF',
-    'chartArea': { left: 70, top: 48, width: '76%', height: '70%' },
-    'curveType': 'none',
-    'lineWidth': 2,
-    'pointSize': 5,
-    'hAxis': { slantedText: true, slantedTextAngle: 45,
-               textStyle: { fontSize: 9, color: COLORS.SUBTITLE } },
-    'vAxis': { gridlines: { color: COLORS.GRID },
-               textStyle: { fontSize: 9, color: COLORS.SUBTITLE } },
-    'titleTextStyle': { color: COLORS.TITLE, fontSize: 13, bold: true }
-  };
+  var anchor = lastRow + 3;
 
-  chart_(sh, [sh.getRange(headerRow, 1, rows.length + 1, 4)], 5, 8, common, {
+  chart_(sh, [sh.getRange(headerRow, 1, rows.length + 1, 3)], anchor, 1, {
     'title': 'ROAS vs POAS by week',
-    'colors': [COLORS.SERIES_1, COLORS.SERIES_2, COLORS.SERIES_3],
-    'legend': { position: 'top', textStyle: { fontSize: 10 } },
-    'vAxis': { title: 'Return per $ spent', minValue: 0,
-               gridlines: { color: COLORS.GRID },
-               textStyle: { fontSize: 9, color: COLORS.SUBTITLE } }
+    'colors': [COLORS.SERIES_1, COLORS.SERIES_2],
+    'legend': 'top'
   });
 
-  chart_(sh, [weekCol, sh.getRange(headerRow, 5, rows.length + 1, 1)], 24, 8,
-      common, {
+  chart_(sh, [weekCol, sh.getRange(headerRow, 4, rows.length + 1, 1)],
+      anchor + 20, 1, {
     'title': 'Conversion value by week (' + meta.currency + ')',
     'colors': [COLORS.SERIES_1],
-    'legend': { position: 'none' },
-    'vAxis': { title: meta.currency, minValue: 0,
-               gridlines: { color: COLORS.GRID },
-               textStyle: { fontSize: 9, color: COLORS.SUBTITLE } }
+    'legend': 'none'
   });
 
-  chart_(sh, [weekCol, sh.getRange(headerRow, 6, rows.length + 1, 1)], 43, 8,
-      common, {
+  chart_(sh, [weekCol, sh.getRange(headerRow, 5, rows.length + 1, 1)],
+      anchor + 40, 1, {
     'title': 'Conversions by week',
     'colors': [COLORS.SERIES_3],
-    'legend': { position: 'none' },
-    'vAxis': { title: 'Conversions', minValue: 0,
-               gridlines: { color: COLORS.GRID },
-               textStyle: { fontSize: 9, color: COLORS.SUBTITLE } }
+    'legend': 'none'
   });
 
-  Logger.log('Charts tab written (' + rows.length + ' weeks, last row ' +
-             lastRow + ').');
+  // Report what the sheet actually holds, so a chart that silently failed to
+  // insert shows up in the run log instead of as an empty tab.
+  var drawn = sh.getCharts().length;
+  Logger.log('Charts tab: ' + rows.length + ' weeks, ' + drawn + ' of 3 charts inserted.');
+  if (drawn < 3) {
+    logProblem_('Charts tab: only ' + drawn + ' of 3 charts were inserted.');
+  }
 }
 
-// One line chart from one or more ranges. Each chart is built and inserted on
-// its own so a single bad option cannot cost the whole tab.
-function chart_(sh, ranges, row, col, common, options) {
+// One line chart from one or more ranges, anchored at (row, col). Options are
+// kept to the plain scalar set that every Scripts runtime accepts - nested
+// style objects are the first thing to be silently dropped.
+function chart_(sh, ranges, row, col, options) {
   try {
     var b = sh.newChart().asLineChart();
     for (var i = 0; i < ranges.length; i++) b.addRange(ranges[i]);
-    var k;
-    for (k in common) if (!(k in options)) b.setOption(k, common[k]);
-    for (k in options) b.setOption(k, options[k]);
+    b.setOption('width', 760);
+    b.setOption('height', 340);
+    b.setOption('pointSize', 5);
+    b.setOption('lineWidth', 2);
+    b.setOption('backgroundColor', '#FFFFFF');
+    for (var k in options) b.setOption(k, options[k]);
     b.setPosition(row, col, 0, 0);
     sh.insertChart(b.build());
   } catch (e) {
@@ -868,9 +866,7 @@ function sendEmail_(campaigns, meta, sheetUrl) {
     return c.name + ' | cost ' + meta.currency + ' ' + fix2_(m.cost) +
         ' | ROAS ' + fix2_(x.roas) +
         ' | POAS ' + (x.poas === null ? 'n/a' : fix2_(x.poas)) +
-        ' | est. POAS ' + fix2_(x.estPoas) +
         ' | margin ' + (x.margin === null ? 'n/a' : Math.round(x.margin * 100) + '%') +
-        ' | cart margin ' + (x.cartMargin === null ? 'n/a' : Math.round(x.cartMargin * 100) + '%') +
         '\n    ' + m.notes.join('; ');
   });
   var subject = 'POAS vs ROAS - ' + meta.account + ' - week of ' + latest +
@@ -918,8 +914,8 @@ function fix2_(v) {
 }
 
 // Cart-only metrics print blank (not 0) on rows that have no cart data.
-function cartVal_(x, v) {
-  return x.hasCart ? r2_(v) : '';
+function profitVal_(x, v) {
+  return x.hasProfit ? r2_(v) : '';
 }
 
 function prettyType_(t) {
